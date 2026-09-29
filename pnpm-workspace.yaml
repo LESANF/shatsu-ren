@@ -1,0 +1,6 @@
+packages:
+  - apps/*
+  - packages/*
+  - tests
+minimumReleaseAgeExclude:
+  - '@types/chrome@0.3.4'

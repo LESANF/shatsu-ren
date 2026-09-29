@@ -1,0 +1,28 @@
+{
+  "name": "shatsu-ren",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "pnpm install --frozen-lockfile",
+    "dev": "pnpm --filter shatsu-ren-extension dev",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r --if-present test",
+    "test:db": "supabase test db",
+    "test:e2e": "pnpm --filter shatsu-ren-e2e test",
+    "build": "pnpm --filter shatsu-ren-protocol build && pnpm --filter shatsu-ren-extension build",
+    "zip": "pnpm --filter shatsu-ren-protocol build && pnpm --filter shatsu-ren-extension zip",
+    "db:start": "supabase start",
+    "db:reset": "supabase db reset"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2",
+    "prettier": "^3.6.2"
+  }
+}

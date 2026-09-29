@@ -1,0 +1,5 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "types": ["node", "chrome"], "lib": ["ES2022", "DOM"], "noEmit": true },
+  "include": ["db", "e2e", "lib"]
+}

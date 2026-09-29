@@ -1,0 +1,14 @@
+node_modules/
+.output/
+.wxt/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+supabase/.temp/
+supabase/.branches/
+tests/.state/
+tests/.profiles/
+docs/validation/raw/
+.DS_Store

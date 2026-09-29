@@ -1,0 +1,35 @@
+{
+  "name": "shatsu-ren-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "build:dev-auth": "SHATSU_DEV_AUTH=1 wxt build --mode development",
+    "zip": "wxt zip",
+    "typecheck": "wxt prepare && tsc --noEmit",
+    "lint": "prettier --check src entrypoints",
+    "test": "vitest run",
+    "icons": "node scripts/make-placeholder-icons.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
+    "idb": "^8.0.3",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "shatsu-ren-protocol": "workspace:*",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@wxt-dev/module-react": "^1.2.2",
+    "fake-indexeddb": "^6.0.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.2",
+    "wxt": "^0.21.4"
+  }
+}
