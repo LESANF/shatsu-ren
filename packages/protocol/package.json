@@ -1,0 +1,17 @@
+{
+  "name": "shatsu-ren-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts", "./vectors": "./src/vectors.json" },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "prettier --check src",
+    "test": "vitest run"
+  },
+  "dependencies": { "zod": "^4.6.5" },
+  "devDependencies": { "typescript": "^5.9.3", "vitest": "^5.0.2", "prettier": "^3.6.2" }
+}
