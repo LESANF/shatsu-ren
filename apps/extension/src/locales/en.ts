@@ -3,7 +3,7 @@ export const en: Dict = {
   appName: 'shatsu-ren',
   tagline: 'Your bookmarks, across browsers.',
   settings: 'Settings',
-  checkNow: 'Check now',
+  checkNow: 'Compare with server & update',
   reviewChanges: 'Review changes',
   login: 'Continue with Google',
   loginDev: 'Local test login (dev build)',
@@ -18,11 +18,11 @@ export const en: Dict = {
   status: {
     checking: 'Checking status',
     unconfigured: 'Choose a folder to connect',
-    idle: 'This browser is up to date',
+    idle: 'Same as server · nothing to update',
     idlePartial: 'Active folders are up to date · {n} paused',
     syncing: 'Checking and applying changes',
     syncingManualOff: 'Syncing this once · auto sync is off',
-    pending: '{out} to send · {in} to apply',
+    pending: 'Update available · {in} to receive · {out} to send',
     offline: 'Offline · keeping your changes',
     reconnecting: 'Reconnecting realtime · checking periodically',
     paused: 'Auto sync paused',
@@ -59,7 +59,7 @@ export const en: Dict = {
     STORAGE_FAILED: 'Could not save the change log.',
     INTERNAL: 'An unexpected error occurred. See diagnostics.',
   },
-  lastCheck: 'Last server check · {t}',
+  lastCheck: 'Last compared with server · {t}',
   never: 'never',
   justNow: 'just now',
   minutesAgo: '{n} min ago',
@@ -73,7 +73,7 @@ export const en: Dict = {
   },
   folders: '{n} connected folder(s)',
   foldersPaused: '{n} connected · {p} paused',
-  queue: '{out} to send · {in} to apply',
+  queue: '{in} to receive · {out} to send',
   recent: 'Recent changes',
   viewAll: 'View all',
   noHistory: 'Changes will appear here after you connect',
@@ -216,6 +216,7 @@ export const en: Dict = {
     kinds: {
       edit_edit: 'The same item was edited on both sides',
       move_move: 'The same item was moved on both sides',
+      order_order: 'Bookmark order was changed on both sides',
       local_edit_remote_delete: 'An item deleted in another browser was edited here',
       local_delete_remote_edit: 'An item deleted here was edited in another browser',
     },
@@ -241,6 +242,8 @@ export const en: Dict = {
     title: 'Review',
     kinds: {
       mass_delete_out: 'Already deleted in this browser. Send the deletion to other browsers?',
+      generation_recovery:
+        'Review the restored server data. Previous queued operations will be re-evaluated against your current bookmarks.',
       mass_delete_in: 'Delete here the items deleted in another browser?',
       moved_out: 'Items were moved out of the connected scope',
       create_recovery: 'An interrupted create needs attention',
@@ -259,7 +262,8 @@ export const en: Dict = {
     restoreRemote: 'Restore account version',
     later: 'Later',
     export: 'Export',
-    massNote: 'Closing or going back keeps this on hold without approving.',
+    massNote:
+      'Every deletion waits for approval. Additions and edits continue to sync while deletion is held.',
     movedOutNote:
       'Keeping in account recreates the account version inside the shared folder. If you moved it into another connected folder, it is uploaded there as a new item.',
     recoveryNote:
@@ -299,6 +303,10 @@ export const en: Dict = {
       'Turning it off stops sending, the realtime connection and periodic checks in this browser. Changes keep being recorded. Other browsers are unaffected.',
     syncOnce: 'Sync once now',
     realtime: 'Realtime connection',
+    realtimeHint:
+      'Off: no persistent connection; sync only on the interval below and "Check now". Changes are still kept.',
+    pollInterval: 'Check interval',
+    pollOptions: { 5: '5 min', 30: '30 min', 240: '4 hours' },
     language: 'Language',
     theme: 'Theme',
     themes: { auto: 'System', light: 'Light', dark: 'Dark' },

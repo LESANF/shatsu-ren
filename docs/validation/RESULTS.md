@@ -15,7 +15,7 @@
 | A05 | __A05__ | e2e-rec: 서버 세션 삭제 → auth_required, 로컬 변경 보존, 재로그인 후 전송. 만료 토큰의 refresh 경로(SDK getSession)는 시간 경과 시뮬레이션 없이 미검증 |
 | A06 | 통과 | e2e-sync A06/F07: 로그아웃→타 계정 로그인 시 binding/collection 없음, 이전 계정 데이터 미전송, 원래 계정 재로그인 시 복원 |
 | A07 | 통과 | db A07: 재로그인(새 device) 후 같은 opId 재전송 → 동일 receipt, commit 1개 |
-| A08 | 차단 | Google OAuth client 없음. 취소/잘못된 redirect/ code 없음 처리 코드는 `src/auth/session.ts`(loginWithGoogle) |
+| A08 | 부분 | 2026-09-29 18:1x KST 사용자가 Google Cloud OAuth client(테스트 모드) 생성 후 **Google Chrome 154 에서 실제 Google 로그인·PKCE 교환·장치 등록·폴더 연결(385개 업로드) 성공** (서버 auth.identities provider=google 1건). Aside 왕복·취소/잘못된 redirect 경로는 아직 미실행 |
 | A09 | 차단 | 위와 같음. 개발/릴리스 확장 ID 별 redirect 등록 절차는 `docs/INSTALL.md` §4 |
 | B01 | 통과 | e2e-sync B01: 빈 서버 첫 연결, toServer=4/deletes=0/excluded=1, 로컬 트리 불변 |
 | B02 | 통과 | e2e-sync B02: 기존 항목 1개 정확 매칭(matched=1), 나머지 수신(toLocal=3), 삭제 0, 이름 같아도 자동 연결 없음 |
@@ -38,10 +38,10 @@
 | C12 | 부분 | unit: reconcile 은 이벤트가 아닌 3-way 비교라 사용자 편집을 반향으로 버리지 않음. 원격 적용 도중 실제 동시 편집 e2e 는 없음 |
 | C13 | 부분 | unit C13(moved_out 검토, 삭제 없음). 실제 브라우저 범위 밖 이동 e2e 없음 |
 | C14 | 통과 | db C14 |
-| D01 | __D01__ | e2e-rec D01: 'started' create journal 주입 → recovery_required + create_recovery 검토(후보 표시), 자동 mapping 없음, 후보 선택 후 재개 |
+| D01 | 통과 | e2e-rec D01: 'started' create journal 주입 → recovery_required + create_recovery 검토(후보 표시), 자동 mapping 없음, 후보 선택 후 재개 |
 | D02 | 부분 | e2e-sync E03: 수신 대량 삭제가 서버 shadow(received)에는 반영되고 native 적용(applied)은 승인 전 없음. 저장/적용 사이 강제 종료 자체는 재현 안 함 |
 | D03 | 통과 | e2e-sync D03: 자동 동기화 꺼진 채 편집 → 브라우저 재시작 → 재개 후 반영 |
-| D04 | __D04__ | e2e-rec R03: 강제 종료 후 재기동 시 alarm 재확인·누락 delta 복구 |
+| D04 | 통과 | e2e-rec R03: 강제 종료 후 재기동 시 alarm 재확인·누락 delta 복구 |
 | D05 | 부분 | db: CURSOR_EXPIRED 반환. 클라이언트 `rebuildFromSnapshot`(outbox/observed 보존) 은 코드 경로만 |
 | D06 | 부분 | db D06: rotate_generations 후 이전 세대 명령 SERVER_GENERATION_CHANGED, 장치 재인증. 클라이언트 blocked→"서버 상태와 다시 비교" UI 는 미실행 |
 | D07 | 미검증 | rpc.ts 가 응답 schema(zod) 검증·5xx 를 TransportError 로 분리, 삭제 경로는 shadow tombstone 만 사용. 실제 5xx 주입 없음 |
@@ -67,17 +67,17 @@
 | U05 | 통과 | e2e-sync B02: 원격 공유 폴더 선택 ↔ 로컬 폴더 구분, 이름 같아도 자동 연결 없음 |
 | U06 | 부분 | e2e-sync: 방향별 수치 정확(B01/B02), 계획 변경 시 REPLAN. 백업 실패 시 적용 차단은 코드(`commitPlan` BACKUP_FAILED)만 |
 | U07 | 부분 | 로그인·장치 등록·binding 은 영속. 미리보기 계획은 worker 메모리에만 있어 탭/worker 종료 시 다시 미리보기(중복 업로드 없음). 첫 적용 "일시 정지" 버튼은 v1 UI 에 없음(진행은 단일 실행) |
-| U08 | __U08__ | e2e-rec U08 |
-| U09 | __U09__ | e2e-rec U09 |
+| U08 | 통과 | e2e-rec U08 |
+| U09 | 통과 | e2e-rec U09 |
 | U10 | 통과 | unit status.test.ts: 우선순위·worker 연결 전 checking·전부/일부 정지 |
 | U11 | 부분 | e2e-sync E03: 승인 전 전파/적용 없음. Escape/뒤로 UI 조작은 ReviewDetail 코드(Escape → 목록) 만 |
 | U12 | 부분 | 문구가 "이 브라우저는 최신 상태예요"로 범위 한정, 상대 적용 완료 주장 없음(popup 스크린샷). 상대 종료 시나리오 실행 없음 |
 | U13 | 통과 | 임시 아이콘 스크립트 생성(`PLACEHOLDER_ICONS.md`), 기존 시안 미사용, 토큰은 중립 색 |
 | P01 | __P01__ | e2e-rec P01 (raw/p01-1k.json). 10k 는 미측정 |
-| P02 | __P02__ | e2e-p02 (raw/p02-idle.json) |
+| P02 | 실패→수정 후 재실행 중 | 1차(17:23 KST): 31분 유휴 후 첫 편집이 30초 내 미도달(양쪽 worker 는 살아 있음). 원인 추정: 유휴 중 소켓 단절 후 채널 state 만 검사해 재구독 안 됨. 조치: alarm 마다 `realtime.isConnected()` 검사 후 재구독. 2차 결과는 raw/p02-idle.json |
 | R01 | 통과 | raw/r01-latency.json: A→B p50 261/p95 263 ms, B→A p50 263/p95 266 ms (각 30회), 목표 3 s 이내 |
 | R02 | 부분 | 60회 중 신호 유실 0. 유실·중복·순서 역전 주입 테스트 없음(cursor 기반 수렴은 db 페이지 테스트) |
-| R03 | __R03__ | e2e-rec R03 |
+| R03 | 통과 | e2e-rec R03 |
 | R04 | 통과 | db R04: 타 계정 구독 거부, client 발행 미전달, 서버 알림 payload `{type:'changed'}` 만 |
 | R05 | 부분 | db A04: 철회 즉시 모든 데이터 RPC 차단. 열린 채널의 즉시 종료는 미보장(SECURITY.md 에 문서화) |
 | R06 | 미검증 | RealtimeLink backoff+jitter 재접속·주기 alarm 보조 경로(코드). 연결 한도 초과 주입 없음 |

@@ -2,7 +2,7 @@ export const ko = {
   appName: 'shatsu-ren',
   tagline: '어느 브라우저에서든, 담아 둔 북마크 그대로.',
   settings: '설정',
-  checkNow: '지금 확인',
+  checkNow: '서버와 비교해 갱신',
   reviewChanges: '변경 검토',
   login: 'Google로 계속하기',
   loginDev: '로컬 테스트 로그인(개발 빌드)',
@@ -16,11 +16,11 @@ export const ko = {
   status: {
     checking: '상태 확인 중',
     unconfigured: '연결할 폴더를 선택해 주세요',
-    idle: '이 브라우저는 최신 상태예요',
+    idle: '서버 북마크와 같아요 · 갱신할 변경 없음',
     idlePartial: '활성 폴더는 최신 상태예요 · {n}개 정지',
     syncing: '변경사항을 확인/적용하고 있어요',
     syncingManualOff: '이번 변경 동기화 중 · 자동 동기화 꺼짐',
-    pending: '보낼 변경 {out}개 · 적용 대기 {in}개',
+    pending: '서버와 비교 결과 갱신 가능 · 받을 변경 {in}개 · 보낼 변경 {out}개',
     offline: '오프라인 · 변경사항 보관 중',
     reconnecting: '실시간 연결 재시도 중 · 주기적으로 확인하고 있어요',
     paused: '자동 동기화 일시 정지',
@@ -56,7 +56,7 @@ export const ko = {
     STORAGE_FAILED: '변경 기록을 저장하지 못했어요.',
     INTERNAL: '예상하지 못한 오류가 있었어요. 진단 정보를 확인해 주세요.',
   },
-  lastCheck: '마지막 서버 확인 · {t}',
+  lastCheck: '서버와 마지막 비교 · {t}',
   never: '아직 없음',
   justNow: '방금',
   minutesAgo: '{n}분 전',
@@ -70,7 +70,7 @@ export const ko = {
   },
   folders: '연결 폴더 {n}개',
   foldersPaused: '연결 {n}개 · {p}개 정지',
-  queue: '보낼 변경 {out}개 · 적용 대기 {in}개',
+  queue: '받을 변경 {in}개 · 보낼 변경 {out}개',
   recent: '최근 변경',
   viewAll: '모두 보기',
   noHistory: '연결 후 변경 내역이 여기에 표시돼요',
@@ -211,6 +211,7 @@ export const ko = {
     kinds: {
       edit_edit: '같은 항목을 양쪽에서 수정했어요',
       move_move: '같은 항목을 양쪽에서 이동했어요',
+      order_order: '같은 폴더의 북마크 순서를 양쪽에서 바꿨어요',
       local_edit_remote_delete: '다른 브라우저에서 삭제한 항목을 여기서 수정했어요',
       local_delete_remote_edit: '여기서 삭제한 항목을 다른 브라우저에서 수정했어요',
     },
@@ -234,6 +235,8 @@ export const ko = {
     title: '검토',
     kinds: {
       mass_delete_out: '이 브라우저에서는 이미 삭제됐어요. 다른 브라우저에도 삭제를 보낼까요?',
+      generation_recovery:
+        '서버 복원 후 공유 내용을 확인해 주세요. 이전 전송 대기 작업은 현재 북마크와 비교해 다시 검토해요.',
       mass_delete_in: '다른 브라우저에서 삭제한 항목을 여기에서도 삭제할까요?',
       moved_out: '연결 범위 밖으로 이동한 항목이 있어요',
       create_recovery: '중단된 생성 작업을 확인해야 해요',
@@ -252,7 +255,7 @@ export const ko = {
     restoreRemote: '계정 버전 복원',
     later: '나중에',
     export: '내보내기',
-    massNote: '닫거나 뒤로 가면 승인하지 않고 보류돼요.',
+    massNote: '한 개의 삭제도 승인 전에는 전파하지 않아요. 보류 중에도 추가·수정은 계속 공유돼요.',
     movedOutNote:
       '계정에 유지하면 공유 폴더 안에 계정 버전이 다시 생겨요. 다른 연결 폴더 안으로 옮겼다면 그 폴더에 새 항목으로 올라가요.',
     recoveryNote:
@@ -291,6 +294,10 @@ export const ko = {
       '끄면 이 브라우저의 전송·실시간 연결·주기 확인을 멈춰요. 변경 기록은 계속 보관돼요. 다른 브라우저에는 영향이 없어요.',
     syncOnce: '지금 한 번 동기화',
     realtime: '실시간 연결',
+    realtimeHint:
+      '끄면 서버와 상시 연결하지 않고 아래 주기와 "지금 확인"으로만 맞춰요. 변경은 계속 보관돼요.',
+    pollInterval: '주기 확인 간격',
+    pollOptions: { 5: '5분', 30: '30분', 240: '4시간' },
     language: '언어',
     theme: '테마',
     themes: { auto: '시스템', light: '밝게', dark: '어둡게' },

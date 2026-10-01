@@ -416,7 +416,7 @@ enabled = true
 
 # shatsu-ren: Google 로그인 (자격 증명은 env 로만 주입, 파일에 secret 을 넣지 않는다)
 [auth.external.google]
-enabled = false
+enabled = true
 client_id = "env(SHATSU_GOOGLE_CLIENT_ID)"
 secret = "env(SHATSU_GOOGLE_CLIENT_SECRET)"
 skip_nonce_check = true

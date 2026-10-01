@@ -2,7 +2,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { execSync } from 'node:child_process';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { launch, makeFolder, subtree, waitFor, type BmNode, type ExtBrowser } from '../lib/browser';
+import { launch, makeFolder, subtree, waitFor, type ExtBrowser } from '../lib/browser';
 import { localStack } from '../lib/supabase';
 
 const RAW = new URL('../../docs/validation/raw/', import.meta.url).pathname;
@@ -73,70 +73,53 @@ describe('P02 장시간 유휴', () => {
       const receiptsAfterIdle = Number(
         psql(`select count(*) from shatsu.operation_receipts where workspace_id='${ws}'`),
       );
-      // 유휴 뒤 편집 (B→A, A→B): 페이지 없이 worker 만으로 전달되는지 — 생성은 worker evaluate 로
-      const t1 = Date.now();
-      await B.worker.evaluate(
-        (pid) =>
-          chrome.bookmarks.create({
-            parentId: pid,
-            title: 'after idle B',
-            url: 'https://example.com/after-idle-b',
-          }),
-        fB.id,
-      );
-      await waitFor(
-        async () =>
-          (
-            await A.worker.evaluate(() =>
-              chrome.bookmarks.search({ url: 'https://example.com/after-idle-b' }),
-            )
-          ).length === 1,
-        30_000,
-        100,
-      );
-      const latBA = Date.now() - t1;
-      const t2 = Date.now();
-      await A.worker.evaluate(
-        (pid) =>
-          chrome.bookmarks.create({
-            parentId: pid,
-            title: 'after idle A',
-            url: 'https://example.com/after-idle-a',
-          }),
-        fA.id,
-      );
-      await waitFor(
-        async () =>
-          (
-            await B.worker.evaluate(() =>
-              chrome.bookmarks.search({ url: 'https://example.com/after-idle-a' }),
-            )
-          ).length === 1,
-        30_000,
-        100,
-      );
-      const latAB = Date.now() - t2;
-      const socketsA = await A.worker.evaluate(
-        () => (globalThis as { __shatsuSockets?: number }).__shatsuSockets ?? null,
-      );
+      const health = (b: ExtBrowser) =>
+        b.worker.evaluate(() => chrome.runtime.sendMessage({ type: 'diagnostics' }));
+      const diagA = await health(A);
+      const diagB = await health(B);
+      console.log('P02 after-idle diag', JSON.stringify({ A: diagA, B: diagB }).slice(0, 1500));
+      // 유휴 뒤 편집 (B→A, A→B): 30 s 안에 즉시 전달되는지, 아니면 5분 주기 확인으로 복구되는지 구분해 기록
+      const measure = async (src: ExtBrowser, dst: ExtBrowser, pid: string, url: string) => {
+        const t = Date.now();
+        await src.worker.evaluate(
+          ([p, u]) => chrome.bookmarks.create({ parentId: p, title: 'after idle', url: u }),
+          [pid, url] as [string, string],
+        );
+        const arrived = () =>
+          dst.worker
+            .evaluate((u) => chrome.bookmarks.search({ url: u }), url)
+            .then((r) => r.length === 1);
+        const immediate = await waitFor(arrived, 30_000, 100)
+          .then(() => true)
+          .catch(() => false);
+        const ms = immediate
+          ? Date.now() - t
+          : await waitFor(arrived, 6 * 60_000, 500)
+              .then(() => Date.now() - t)
+              .catch(() => -1);
+        return { ms, immediate };
+      };
+      const rBA = await measure(B, A, fB.id, 'https://example.com/after-idle-b');
+      const rAB = await measure(A, B, fA.id, 'https://example.com/after-idle-a');
+      const latBA = rBA.ms;
+      const latAB = rAB.ms;
       const result = {
         measuredAt: new Date().toISOString(),
         idleMinutes: (Date.now() - t0) / 60000,
         commitsDuringIdle: commitsAfterIdle - commitsBefore,
         receiptsDuringIdle: receiptsAfterIdle - receiptsBefore,
         latencyAfterIdleMs: { 'B→A': latBA, 'A→B': latAB },
-        socketsA,
+        healthAfterIdle: { A: diagA, B: diagB },
         browsers: { A: A.version, B: B.version },
       };
       writeFileSync(RAW + 'p02-idle.json', JSON.stringify(result, null, 1));
       console.log('P02', JSON.stringify(result));
       expect(commitsAfterIdle - commitsBefore).toBe(0);
+      expect(receiptsAfterIdle - receiptsBefore).toBe(0);
+      expect(latBA).toBeGreaterThanOrEqual(0);
+      expect(latAB).toBeGreaterThanOrEqual(0);
       expect(latBA).toBeLessThan(5000);
       expect(latAB).toBeLessThan(5000);
-      void A;
-      void B;
-      const _unused: BmNode | null = null;
-      void _unused;
     },
     (IDLE_MIN + 5) * 60_000,
   );
