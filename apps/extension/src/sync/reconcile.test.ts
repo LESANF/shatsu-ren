@@ -270,8 +270,8 @@ describe('reconcile', () => {
         shadowNodes,
       }),
     );
-    expect(clean.localActions).toEqual([]);
-    expect(clean.reviews[0]?.kind).toBe('mass_delete_in');
+    expect(clean.localActions).toEqual([{ type: 'remove', globalId: F, localId: 'f', count: 1 }]);
+    expect(clean.reviews).toEqual([]);
     const dirty = reconcile(
       input({
         local: tree([
@@ -333,67 +333,16 @@ describe('reconcile', () => {
     expect(out.conflicts[0]?.kind).toBe('local_delete_remote_edit');
   });
 
-  it('E03 대량 삭제(20개) → 검토 보류, 승인 후 op', () => {
+  it('삭제는 확인 없이 따라간다: 보내는 쪽 20개, 받는 쪽 20개 모두 검토 없이 반영', () => {
     const ids = Array.from({ length: 20 }, () => gid());
-    const shadowNodes = new Map<string, NodeRecord>([
+    const live = new Map<string, NodeRecord>([
       [ROOT_G, snode({ id: ROOT_G, kind: 'root', parentId: null })],
     ]);
-    const observed = new Map<string, ObservedNode>([['r', rootObs]]);
-    ids.forEach((g, i) => {
-      shadowNodes.set(g, snode({ id: g, kind: 'bookmark' }));
-      observed.set('l' + i, obs('l' + i, g));
-    });
-    const held = reconcile(input({ local: tree([]), observed, shadowNodes }));
-    expect(held.ops).toEqual([]);
-    expect(held.reviews[0]).toMatchObject({ kind: 'mass_delete_out', scopeCount: 20 });
-    expect(held.reviews[0]!.items).toHaveLength(20);
-    const approved = reconcile(
-      input({ local: tree([]), observed, shadowNodes, approvedOutboundDeletes: new Set(ids) }),
-    );
-    expect(approved.ops).toHaveLength(20);
-  });
-
-  it('20% 규칙: 25개 중 5개 삭제 → 검토', () => {
-    const ids = Array.from({ length: 25 }, () => gid());
-    const shadowNodes = new Map<string, NodeRecord>([
-      [ROOT_G, snode({ id: ROOT_G, kind: 'root', parentId: null })],
-    ]);
-    const observed = new Map<string, ObservedNode>([['r', rootObs]]);
-    ids.forEach((g, i) => {
-      shadowNodes.set(g, snode({ id: g, kind: 'bookmark' }));
-      observed.set('l' + i, obs('l' + i, g));
-    });
-    const keep = ids.slice(5).map((_, i) => ({
-      id: 'l' + (i + 5),
-      parent: null,
-      kind: 'bookmark' as const,
-      title: 't',
-      url: 'https://example.com/',
-    }));
-    const out = reconcile(input({ local: tree(keep), observed, shadowNodes }));
-    expect(out.reviews[0]?.kind).toBe('mass_delete_out');
-    const four = reconcile(
-      input({
-        local: tree([
-          { id: 'l4', parent: null, kind: 'bookmark', title: 't', url: 'https://example.com/' },
-          ...keep,
-        ]),
-        observed,
-        shadowNodes,
-      }),
-    );
-    expect(four.reviews[0]?.kind).toBe('mass_delete_out');
-    expect(four.ops).toHaveLength(0);
-  });
-
-  it('수신 대량 삭제 → 검토 후 적용', () => {
-    const ids = Array.from({ length: 20 }, () => gid());
-    const shadowNodes = new Map<string, NodeRecord>([
-      [ROOT_G, snode({ id: ROOT_G, kind: 'root', parentId: null })],
-    ]);
+    const gone = new Map<string, NodeRecord>(live);
     const observed = new Map<string, ObservedNode>([['r', rootObs]]);
     const spec = ids.map((g, i) => {
-      shadowNodes.set(g, snode({ id: g, kind: 'bookmark', revision: 2, deletedAt: 'x' }));
+      live.set(g, snode({ id: g, kind: 'bookmark' }));
+      gone.set(g, snode({ id: g, kind: 'bookmark', revision: 2, deletedAt: 'x' }));
       observed.set('l' + i, obs('l' + i, g));
       return {
         id: 'l' + i,
@@ -403,13 +352,12 @@ describe('reconcile', () => {
         url: 'https://example.com/',
       };
     });
-    const held = reconcile(input({ local: tree(spec), observed, shadowNodes }));
-    expect(held.localActions).toEqual([]);
-    expect(held.reviews[0]?.kind).toBe('mass_delete_in');
-    const ok = reconcile(
-      input({ local: tree(spec), observed, shadowNodes, approvedInboundDeletes: new Set(ids) }),
-    );
-    expect(ok.localActions.filter((a) => a.type === 'remove')).toHaveLength(20);
+    const out = reconcile(input({ local: tree([]), observed, shadowNodes: live }));
+    expect(out.reviews).toEqual([]);
+    expect(out.ops.filter((o) => o.kind === 'deleteSubtree')).toHaveLength(20);
+    const inc = reconcile(input({ local: tree(spec), observed, shadowNodes: gone }));
+    expect(inc.reviews).toEqual([]);
+    expect(inc.localActions.filter((a) => a.type === 'remove')).toHaveLength(20);
   });
 
   it('C13 범위 밖 이동 → moved_out 검토, 삭제 op 없음', () => {
@@ -450,8 +398,8 @@ describe('reconcile', () => {
       }),
     );
     expect(out.ops).toEqual([]);
-    expect(out.localActions).toEqual([]);
-    expect(out.reviews[0]?.kind).toBe('mass_delete_in');
+    expect(out.localActions[0]?.type).toBe('remove');
+    expect(out.reviews).toEqual([]);
   });
 
   it('C11 echo: 적용 후 base 가 일치하면 재전송 없음', () => {
