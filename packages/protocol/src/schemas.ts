@@ -28,6 +28,9 @@ export const CollectionRecordSchema = z.object({
   title: z.string(),
   rootNodeId: uuid,
   revision: nonNegInt,
+  // 2026-10-01 서버부터 제공. 이전 서버·기존 commit 에는 없을 수 있다.
+  createdAt: z.string().optional(),
+  createdByDeviceId: uuid.nullable().optional(),
 });
 
 const base = { opId: uuid, collectionId: uuid };

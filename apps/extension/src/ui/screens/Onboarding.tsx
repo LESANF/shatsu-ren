@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { dict, fmt } from '../../i18n';
+import { dict, fmt, locale } from '../../i18n';
 import { send, type StateSnapshot } from '../../messages';
 import type { TreePickerNode } from '../../sync/browser';
 import type { MergePlan } from '../../sync/plan';
@@ -24,7 +24,9 @@ export function Onboarding({
   const d = dict();
   const loggedIn = state.status !== 'auth_required' && !!state.account;
   const [step, setStep] = useState<Step>(loggedIn ? 1 : 0);
-  const [plan, setPlan] = useState<(MergePlan & { collectionTitle: string }) | null>(null);
+  const [plan, setPlan] = useState<
+    (MergePlan & { collectionTitle: string; localTitle?: string }) | null
+  >(null);
   const [done, setDone] = useState<{ local: string; shared: string } | null>(null);
   useEffect(() => {
     if (loggedIn && step === 0) setStep(1);
@@ -161,187 +163,241 @@ function LoginStep({ state, refresh }: { state: StateSnapshot; refresh: () => Pr
   );
 }
 
+function shortBrowser(deviceLabel: string): string {
+  const brands =
+    (navigator as { userAgentData?: { brands: { brand: string }[] } }).userAgentData?.brands ?? [];
+  const known: Record<string, string> = {
+    'Google Chrome': 'Chrome',
+    'Microsoft Edge': 'Edge',
+    Brave: 'Brave',
+    Opera: 'Opera',
+    Vivaldi: 'Vivaldi',
+  };
+  for (const b of brands) if (known[b.brand]) return known[b.brand]!;
+  return deviceLabel.split(' · ')[0]?.trim() || '';
+}
+
 function PickStep({
   state,
   onPlan,
 }: {
   state: StateSnapshot;
-  onPlan: (p: MergePlan & { collectionTitle: string }) => void;
+  onPlan: (p: MergePlan & { collectionTitle: string; localTitle?: string }) => void;
 }) {
   const d = dict();
+  const o = d.onboarding;
   const { run, busy, err } = useRequest();
   const [tree, setTree] = useState<TreePickerNode[] | null>(null);
-  const [choice, setChoice] = useState<Choice | null>(null);
+  const unbound = [...state.collections.filter((c) => !c.bound)].sort((a, b) => {
+    const filled = Number((b.itemCount ?? 0) > 0) - Number((a.itemCount ?? 0) > 0);
+    if (filled) return filled; // 내용이 있는 것 먼저
+    const mine = Number(a.createdHere) - Number(b.createdHere);
+    if (mine) return mine; // 다른 브라우저가 만든 것 먼저
+    return (b.createdAt ?? '').localeCompare(a.createdAt ?? ''); // 최근 것 먼저
+  });
+  const defaultTarget =
+    unbound.find((c) => (c.itemCount ?? 0) > 0 && !c.createdHere)?.id ?? unbound[0]?.id ?? 'new';
+  const [target, setTarget] = useState<string>(defaultTarget);
+  const [how, setHow] = useState<'bind' | 'receive'>('bind');
+  const [node, setNode] = useState<TreePickerNode | null>(null);
   const [sharedTitle, setSharedTitle] = useState('');
   const [newName, setNewName] = useState('');
-  const [selectedNode, setSelectedNode] = useState<TreePickerNode | null>(null);
-  const [mode, setMode] = useState<
-    'newShared' | { collectionId: string; how: 'bind' | 'receive' } | null
-  >(null);
-  const unbound = state.collections.filter((c) => !c.bound);
   useEffect(() => {
     void send({ type: 'getFolderTree' }).then(setTree);
   }, []);
   const boundRoots = new Set(state.bindings.map((b) => b.localRootId));
-  const isDisabled = (n: TreePickerNode) => boundRoots.has(n.id);
-  const reason = (n: TreePickerNode) => (boundRoots.has(n.id) ? d.onboarding.nested : undefined);
+  const reason = (n: TreePickerNode) => (boundRoots.has(n.id) ? o.nested : undefined);
+  const col = target === 'new' ? null : (state.collections.find((c) => c.id === target) ?? null);
+  const browser = shortBrowser(state.settings.deviceLabel);
   const select = (n: TreePickerNode) => {
-    setSelectedNode(n);
-    if (mode === 'newShared' || mode === null) {
-      setMode('newShared');
-      setSharedTitle(n.title);
-      setChoice({ mode: 'newShared', localRootId: n.id, title: n.title });
-    } else if (mode.how === 'bind')
-      setChoice({ mode: 'bindExisting', collectionId: mode.collectionId, localRootId: n.id });
-    else {
-      const col = state.collections.find((c) => c.id === mode.collectionId)!;
-      setNewName(col.title);
-      setChoice({
-        mode: 'receiveNew',
-        collectionId: mode.collectionId,
-        parentLocalId: n.id,
-        title: col.title,
-      });
-    }
+    setNode(n);
+    if (!col) setSharedTitle(browser ? `${browser} ${n.title}` : n.title);
+    else setNewName(col.title);
   };
+  const pickTarget = (id: string) => {
+    setTarget(id);
+    setNode(null);
+  };
+  const meta = (c: StateSnapshot['collections'][number]) => {
+    const parts: string[] = [];
+    if (c.createdHere) parts.push(o.metaCreatedHere);
+    else if (c.createdBy) parts.push(fmt(o.metaCreatedBy, { who: c.createdBy }));
+    if (c.createdAt)
+      parts.push(
+        new Date(c.createdAt).toLocaleString(locale() === 'ko' ? 'ko-KR' : 'en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        }),
+      );
+    parts.push(c.itemCount ? fmt(o.metaItems, { n: c.itemCount }) : o.metaEmpty);
+    return parts.join(' · ');
+  };
+  const summary = !node
+    ? o.pickFolderFirst
+    : !col
+      ? fmt(o.summaryNew, { local: node.title, shared: sharedTitle || node.title })
+      : how === 'bind'
+        ? fmt(o.summaryBind, { shared: col.title, local: node.title })
+        : fmt(o.summaryReceive, {
+            shared: col.title,
+            local: node.title,
+            name: newName || col.title,
+          });
   const next = async () => {
-    if (!choice) return;
-    const req =
-      choice.mode === 'newShared'
-        ? {
-            type: 'previewMerge' as const,
-            localRootId: choice.localRootId,
-            newCollectionTitle: sharedTitle,
-          }
-        : choice.mode === 'bindExisting'
-          ? {
-              type: 'previewMerge' as const,
-              localRootId: choice.localRootId,
-              collectionId: choice.collectionId,
-            }
-          : {
-              type: 'previewNewLocalFolder' as const,
-              collectionId: choice.collectionId,
-              parentLocalId: choice.parentLocalId,
-              title: newName,
-            };
+    if (!node) return;
+    const req = !col
+      ? {
+          type: 'previewMerge' as const,
+          localRootId: node.id,
+          newCollectionTitle: sharedTitle || node.title,
+        }
+      : how === 'bind'
+        ? { type: 'previewMerge' as const, localRootId: node.id, collectionId: col.id }
+        : {
+            type: 'previewNewLocalFolder' as const,
+            collectionId: col.id,
+            parentLocalId: node.id,
+            title: newName || col.title,
+          };
     const p = await run(req);
-    if (p) onPlan(p);
+    if (p)
+      onPlan({
+        ...p,
+        localTitle:
+          col && how === 'receive' ? `${node.title} / ${newName || col.title}` : node.title,
+      });
   };
   return (
     <div className="card stack">
       {unbound.length > 0 && (
-        <section className="stack">
-          <h2>{d.onboarding.existingTitle}</h2>
-          <p className="small muted">{d.onboarding.existingBody}</p>
-          <table className="table">
-            <tbody>
-              {unbound.map((c) => (
-                <tr key={c.id}>
-                  <td>{c.title}</td>
-                  <td className="row" style={{ justifyContent: 'flex-end' }}>
-                    <button
-                      type="button"
-                      className="btn"
-                      aria-pressed={
-                        typeof mode === 'object' &&
-                        mode?.collectionId === c.id &&
-                        mode.how === 'bind'
-                      }
-                      onClick={() => {
-                        setMode({ collectionId: c.id, how: 'bind' });
-                        setChoice(null);
-                        setSelectedNode(null);
-                      }}
-                    >
-                      {d.onboarding.pickLocal}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      aria-pressed={
-                        typeof mode === 'object' &&
-                        mode?.collectionId === c.id &&
-                        mode.how === 'receive'
-                      }
-                      onClick={() => {
-                        setMode({ collectionId: c.id, how: 'receive' });
-                        setChoice(null);
-                        setSelectedNode(null);
-                      }}
-                    >
-                      {d.onboarding.receiveNew}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button
-            type="button"
-            className="btn link small"
-            aria-pressed={mode === 'newShared'}
-            onClick={() => {
-              setMode('newShared');
-              setChoice(null);
-              setSelectedNode(null);
-            }}
-          >
-            {d.onboarding.addLocalAsNew}
-          </button>
+        <section className="stack" aria-labelledby="pick-shared">
+          <h2 id="pick-shared">{o.step1Title}</h2>
+          <p className="small muted">{o.step1Body}</p>
+          <div className="choices" role="radiogroup" aria-labelledby="pick-shared">
+            {unbound.map((c) => (
+              <label key={c.id} className="choice" data-on={target === c.id || undefined}>
+                <input
+                  type="radio"
+                  name="shared"
+                  id={`shared-${c.id}`}
+                  checked={target === c.id}
+                  onChange={() => pickTarget(c.id)}
+                />
+                <span className="choice-body">
+                  <strong>{c.title || o.untitled}</strong>
+                  <span className="small muted">{meta(c)}</span>
+                </span>
+              </label>
+            ))}
+            <label className="choice" data-on={target === 'new' || undefined}>
+              <input
+                type="radio"
+                name="shared"
+                id="shared-new"
+                checked={target === 'new'}
+                onChange={() => pickTarget('new')}
+              />
+              <span className="choice-body">
+                <strong>{o.newSharedOption}</strong>
+                <span className="small muted">{o.newSharedOptionHint}</span>
+              </span>
+            </label>
+          </div>
         </section>
       )}
-      <h2>
-        {typeof mode === 'object' && mode?.how === 'receive'
-          ? d.onboarding.newFolderParent
-          : d.onboarding.pickTitle}
-      </h2>
-      <p className="small muted">{d.onboarding.pickBody}</p>
-      {tree ? (
-        <FolderTree
-          nodes={tree}
-          selected={selectedNode?.id ?? null}
-          onSelect={select}
-          disabledIds={new Set([...boundRoots])}
-          disabledReason={reason}
-        />
-      ) : (
-        <Spinner />
-      )}
-      {choice?.mode === 'newShared' && (
-        <label className="field">
-          {d.onboarding.sharedName}
-          <input
-            className="input"
-            value={sharedTitle}
-            onChange={(e) => setSharedTitle(e.target.value)}
+      <section className="stack" aria-labelledby="pick-local">
+        <h2 id="pick-local">
+          {unbound.length === 0 ? o.pickTitle : col ? o.step2BindTitle : o.step2NewTitle}
+        </h2>
+        {col ? (
+          <div className="choices row-choices" role="radiogroup" aria-label={o.step2BindTitle}>
+            <label className="choice" data-on={how === 'bind' || undefined}>
+              <input
+                type="radio"
+                name="how"
+                id="how-bind"
+                checked={how === 'bind'}
+                onChange={() => setHow('bind')}
+              />
+              <span className="choice-body">
+                <strong>{o.howBind}</strong>
+                <span className="small muted">{o.howBindHint}</span>
+              </span>
+            </label>
+            <label className="choice" data-on={how === 'receive' || undefined}>
+              <input
+                type="radio"
+                name="how"
+                id="how-receive"
+                checked={how === 'receive'}
+                onChange={() => setHow('receive')}
+              />
+              <span className="choice-body">
+                <strong>{o.howReceive}</strong>
+                <span className="small muted">{o.howReceiveHint}</span>
+              </span>
+            </label>
+          </div>
+        ) : (
+          <p className="small muted">{o.pickBody}</p>
+        )}
+        {tree ? (
+          <FolderTree
+            nodes={tree}
+            selected={node?.id ?? null}
+            onSelect={select}
+            disabledIds={boundRoots}
+            disabledReason={reason}
           />
-          <span className="small muted">{d.onboarding.sharedNameHint}</span>
-        </label>
-      )}
-      {choice?.mode === 'receiveNew' && (
-        <label className="field">
-          {d.onboarding.newFolderName}
-          <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} />
-        </label>
-      )}
+        ) : (
+          <Spinner />
+        )}
+        {!col && node && (
+          <label className="field">
+            {o.sharedName}
+            <input
+              id="shared-title"
+              className="input"
+              value={sharedTitle}
+              onChange={(e) => setSharedTitle(e.target.value)}
+            />
+            <span className="small muted">{o.sharedNameHint}</span>
+          </label>
+        )}
+        {col && how === 'receive' && node && (
+          <label className="field">
+            {o.newFolderName}
+            <input
+              id="new-folder-name"
+              className="input"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+            />
+          </label>
+        )}
+      </section>
       {err && (
         <div className="alert danger" role="alert">
           {err.code === 'NESTED_BINDING'
-            ? d.onboarding.nested
+            ? o.nested
             : err.code === 'MANAGED'
-              ? d.onboarding.managed
+              ? o.managed
               : `${err.code}: ${err.message}`}
         </div>
       )}
+      <div className="summary" aria-live="polite" data-ready={node ? true : undefined}>
+        {summary}
+      </div>
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button
           type="button"
           className="btn primary lg"
-          disabled={!choice || busy || isDisabled(selectedNode ?? ({ id: '' } as TreePickerNode))}
+          disabled={!node || busy || boundRoots.has(node.id)}
           onClick={() => void next()}
         >
-          {d.onboarding.next}
+          {o.nextToPreview}
         </button>
       </div>
     </div>
@@ -354,10 +410,10 @@ export function PreviewStep({
   onDone,
   onReplan,
 }: {
-  plan: MergePlan & { collectionTitle: string };
+  plan: MergePlan & { collectionTitle: string; localTitle?: string };
   onBack: () => void;
   onDone: (local: string, shared: string) => void;
-  onReplan: (p: MergePlan & { collectionTitle: string }) => void;
+  onReplan: (p: MergePlan & { collectionTitle: string; localTitle?: string }) => void;
 }) {
   const d = dict();
   const { run, busy, err } = useRequest();
@@ -390,7 +446,7 @@ export function PreviewStep({
       if (req)
         void send(req)
           .then((p) => {
-            onReplan(p);
+            onReplan({ ...p, ...(plan.localTitle ? { localTitle: plan.localTitle } : {}) });
             setReplan(false);
           })
           .catch(() => undefined);
@@ -410,7 +466,7 @@ export function PreviewStep({
       <p className="small muted">
         {fmt(d.onboarding.shared, {
           s: plan.collectionTitle,
-          l: plan.localRootId ? '…' : d.onboarding.receiveNew,
+          l: plan.localTitle ?? d.onboarding.receiveNew,
         })}
       </p>
       {replan && (
