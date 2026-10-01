@@ -64,6 +64,7 @@ export type Request =
       newCollectionTitle?: string;
     }
   | { type: 'previewNewLocalFolder'; collectionId: string; parentLocalId: string; title: string }
+  | { type: 'previewConnect'; copyFrom: string | null }
   | { type: 'applyMerge'; planId: string }
   | { type: 'pauseBinding'; collectionId: string }
   | { type: 'resumeBinding'; collectionId: string }
@@ -108,25 +109,31 @@ export type Response<T extends Request['type']> = T extends 'getState'
   ? StateSnapshot
   : T extends 'getFolderTree'
     ? TreePickerNode[]
-    : T extends 'previewMerge' | 'previewNewLocalFolder'
-      ? MergePlan & { collectionTitle: string }
-      : T extends 'listConflicts'
-        ? ConflictRecord[]
-        : T extends 'listReviews'
-          ? ReviewItem[]
-          : T extends 'listDevices' | 'revokeDevice'
-            ? DeviceRecord[]
-            : T extends 'listTrash'
-              ? TrashEntry[]
-              : T extends 'listHistory'
-                ? { items: RecentChange[]; hasMore: boolean }
-                : T extends 'getConflictDetail'
-                  ? ConflictRecord & {
-                      localUrl: string | null;
-                      remoteUrl: string | null;
-                      orderTitles?: { local: string[]; remote: string[] };
-                    }
-                  : unknown;
+    : T extends 'previewConnect'
+      ? MergePlan & {
+          collectionTitle: string;
+          localTitle: string;
+          connectMode: 'start' | 'receive' | 'rejoin';
+        }
+      : T extends 'previewMerge' | 'previewNewLocalFolder'
+        ? MergePlan & { collectionTitle: string }
+        : T extends 'listConflicts'
+          ? ConflictRecord[]
+          : T extends 'listReviews'
+            ? ReviewItem[]
+            : T extends 'listDevices' | 'revokeDevice'
+              ? DeviceRecord[]
+              : T extends 'listTrash'
+                ? TrashEntry[]
+                : T extends 'listHistory'
+                  ? { items: RecentChange[]; hasMore: boolean }
+                  : T extends 'getConflictDetail'
+                    ? ConflictRecord & {
+                        localUrl: string | null;
+                        remoteUrl: string | null;
+                        orderTitles?: { local: string[]; remote: string[] };
+                      }
+                    : unknown;
 
 export type Reply = { ok: true; data: unknown } | { ok: false; code: string; message?: string };
 

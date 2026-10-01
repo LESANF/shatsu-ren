@@ -13,7 +13,7 @@ import type {
 import { PROTOCOL_VERSION, subtreeDigestOf } from 'shatsu-ren-protocol';
 import { getMeta, setMeta, StorageError, type Db } from '../storage/db';
 import { api, getSubTree, type LocalTree } from './browser';
-import { prepareContext, type Ctx, type CtxResult } from './context';
+import { prepareContext, setAccount, type Ctx, type CtxResult } from './context';
 import { deletionFingerprint, reconcile, type LocalAction, type OpDraft } from './reconcile';
 import { DomainError, rpc, TransportError } from './rpc';
 import type {
@@ -156,6 +156,8 @@ export class Engine {
       }
       if (e instanceof DomainError) {
         if (e.error.code === 'RATE_LIMITED') await this.scheduleRetry(ctx.db, e.error);
+        // 서버에서 보관함·장치가 지워졌으면(초기화 등) 캐시된 등록을 버려 다음 실행에서 다시 등록한다
+        if (e.error.code === 'DEVICE_NOT_REGISTERED') await setAccount(ctx.backend.url, null);
         await setMeta(ctx.db, 'lastError', { code: e.error.code, at: Date.now() });
         return done(
           e.error.code === 'DEVICE_REVOKED' || e.error.code === 'SESSION_INVALID'
