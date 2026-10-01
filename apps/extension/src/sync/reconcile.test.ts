@@ -270,7 +270,8 @@ describe('reconcile', () => {
         shadowNodes,
       }),
     );
-    expect(clean.localActions).toEqual([{ type: 'remove', globalId: F, localId: 'f', count: 1 }]);
+    expect(clean.localActions).toEqual([]);
+    expect(clean.reviews[0]?.kind).toBe('mass_delete_in');
     const dirty = reconcile(
       input({
         local: tree([
@@ -304,6 +305,7 @@ describe('reconcile', () => {
           ['f', obs('f', F, { kind: 'folder', url: null })],
           ['b', obs('b', B, { parentLocalId: 'f' })],
         ]),
+        approvedOutboundDeletes: new Set([F]),
         shadowNodes,
       }),
     );
@@ -380,8 +382,8 @@ describe('reconcile', () => {
         shadowNodes,
       }),
     );
-    expect(four.reviews).toEqual([]);
-    expect(four.ops).toHaveLength(4);
+    expect(four.reviews[0]?.kind).toBe('mass_delete_out');
+    expect(four.ops).toHaveLength(0);
   });
 
   it('수신 대량 삭제 → 검토 후 적용', () => {
@@ -448,7 +450,8 @@ describe('reconcile', () => {
       }),
     );
     expect(out.ops).toEqual([]);
-    expect(out.localActions[0]?.type).toBe('remove');
+    expect(out.localActions).toEqual([]);
+    expect(out.reviews[0]?.kind).toBe('mass_delete_in');
   });
 
   it('C11 echo: 적용 후 base 가 일치하면 재전송 없음', () => {
@@ -576,6 +579,48 @@ describe('reconcile', () => {
         orderRevision: 4,
       },
     ]);
+  });
+
+  it('concurrent folder orders require a choice without overwriting either order', () => {
+    const a = gid(),
+      b = gid(),
+      c = gid();
+    const nodes = new Map([
+      [ROOT_G, snode({ id: ROOT_G, kind: 'root', parentId: null })],
+      [a, snode({ id: a, kind: 'bookmark', title: 'a' })],
+      [b, snode({ id: b, kind: 'bookmark', title: 'b' })],
+      [c, snode({ id: c, kind: 'bookmark', title: 'c' })],
+    ]);
+    const observed = new Map([
+      ['r', { ...rootObs, childOrder: ['a', 'b', 'c'], orderRevision: 1 }],
+      ['a', obs('a', a, { title: 'a' })],
+      ['b', obs('b', b, { title: 'b' })],
+      ['c', obs('c', c, { title: 'c' })],
+    ]);
+    const out = reconcile(
+      input({
+        observed,
+        shadowNodes: nodes,
+        local: tree(
+          ['b', 'a', 'c'].map((id) => ({
+            id,
+            parent: null,
+            kind: 'bookmark',
+            title: id,
+            url: 'https://example.com/',
+          })),
+        ),
+        shadowOrders: new Map([
+          [ROOT_G, { parentId: ROOT_G, orderedChildIds: [a, c, b], revision: 2 }],
+        ]),
+      }),
+    );
+    expect(out.ops).toEqual([]);
+    expect(out.localActions).toEqual([]);
+    expect(out.conflicts[0]).toMatchObject({
+      kind: 'order_order',
+      orders: { local: [b, a, c], remote: [a, c, b] },
+    });
   });
 
   it('로컬 이동 → move op (anchor = 앞 형제), 원격 이동 → move 액션', () => {

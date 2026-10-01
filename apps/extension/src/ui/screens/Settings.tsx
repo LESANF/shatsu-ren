@@ -50,10 +50,34 @@ export function SettingsScreen({
               </button>
             </div>
           )}
-          <div className="row between">
-            <span>{d.settingsPage.realtime}</span>
-            <span className="small">{d.realtime[state.realtime]}</span>
-          </div>
+          <label className="row between">
+            <span>
+              {d.settingsPage.realtime}
+              <span className="small muted"> · {d.realtime[state.realtime]}</span>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              checked={s.realtime}
+              onChange={(e) => set({ realtime: e.target.checked })}
+            />
+          </label>
+          <p className="small muted">{d.settingsPage.realtimeHint}</p>
+          <label className="row between">
+            <span>{d.settingsPage.pollInterval}</span>
+            <select
+              className="input"
+              style={{ width: 'auto' }}
+              value={s.pollMinutes}
+              onChange={(e) => set({ pollMinutes: Number(e.target.value) as 5 })}
+            >
+              {([5, 30, 240] as const).map((m) => (
+                <option key={m} value={m}>
+                  {d.settingsPage.pollOptions[m]}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="row between">
             <span>{d.settingsPage.language}</span>
             <select

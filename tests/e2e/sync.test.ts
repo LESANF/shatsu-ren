@@ -41,6 +41,25 @@ type State = {
   settings: { autoSync: boolean };
 };
 const state = (b: ExtBrowser) => b.send<State>({ type: 'getState' });
+const approveDeletion = async (b: ExtBrowser, kind: string) => {
+  const review = await waitFor(
+    async () =>
+      (
+        await b.send<{ id: string; kind: string; fingerprint: string }[]>({ type: 'listReviews' })
+      ).find((r) => r.kind === kind),
+    30000,
+  );
+  await b.send({
+    type: 'resolveReview',
+    id: review.id,
+    resolution: 'approve',
+    fingerprint: review.fingerprint,
+  });
+};
+const resolveConflict = async (b: ExtBrowser, id: string, resolution: string) => {
+  const conflict = await b.send<{ fingerprint: string }>({ type: 'getConflictDetail', id });
+  return b.send({ type: 'resolveConflict', id, resolution, fingerprint: conflict.fingerprint });
+};
 const diag = (b: ExtBrowser) => async () => {
   const s = await state(b);
   return {
@@ -276,6 +295,8 @@ describe('C01/C02/E01 수정·이동·순서·삭제 전파', () => {
     const tA = await subtree(A, folderA.id);
     const sub1 = tA.children!.find((c) => c.title === 'Sub 1')!;
     await A.bookmarks('removeTree', sub1.id);
+    await approveDeletion(A, 'mass_delete_out');
+    await approveDeletion(B, 'mass_delete_in');
     await waitFor(
       async () => !(await subtree(B, folderB.id)).children!.some((c) => c.title === 'Sub 1'),
       30_000,
@@ -333,7 +354,7 @@ describe('C03/C04 충돌', () => {
       remote: { title: 'Title from A' },
     });
     note('conflictC03', conflicts[0]);
-    await B.send({ type: 'resolveConflict', id: conflicts[0]!.id, resolution: 'mine' });
+    await resolveConflict(B, conflicts[0]!.id, 'mine');
     await waitFor(
       async () => (await A.bookmarks<BmNode[]>('get', a!.id))[0]!.title === 'Title from B',
       30_000,
@@ -345,6 +366,7 @@ describe('C03/C04 충돌', () => {
     const [a] = await A.bookmarks<BmNode[]>('search', { url: 'https://example.com/ab/1' });
     const [b] = await B.bookmarks<BmNode[]>('search', { url: 'https://example.com/ab/1' });
     await B.bookmarks('remove', b!.id);
+    await approveDeletion(B, 'mass_delete_out');
     // B 의 삭제가 서버에 확정된 것을 휴지통으로 확인한 뒤 A 를 재개한다 (경합 방지)
     await waitFor(
       async () =>
@@ -374,7 +396,7 @@ describe('C03/C04 충돌', () => {
     );
     const c = await A.send<{ id: string; kind: string }[]>({ type: 'listConflicts' });
     expect(c[0]?.kind).toBe('local_edit_remote_delete');
-    await A.send({ type: 'resolveConflict', id: c[0]!.id, resolution: 'mine' });
+    await resolveConflict(A, c[0]!.id, 'mine');
     await waitFor(
       async () =>
         (await B.bookmarks<BmNode[]>('search', { url: 'https://example.com/ab/1' })).some(
@@ -417,7 +439,7 @@ describe('E03/U11 대량 삭제 보호', () => {
     expect(rA[0]?.items.length).toBe(25);
     await sleep(2000);
     expect(await countLat(B, folderB.id)).toBe(beforeB); // 아직 B 에 전파 없음
-    await A.send({ type: 'resolveReview', id: rA[0]!.id, resolution: 'approve' });
+    await approveDeletion(A, 'mass_delete_out');
     const sB = await waitFor(
       async () => {
         const s = await state(B);
@@ -434,7 +456,7 @@ describe('E03/U11 대량 삭제 보호', () => {
     expect(rB[0]?.kind).toBe('mass_delete_in');
     expect(rB[0]?.items.length).toBe(25);
     expect(await countLat(B, folderB.id)).toBe(beforeB); // 승인 전 적용 없음
-    await B.send({ type: 'resolveReview', id: rB[0]!.id, resolution: 'approve' });
+    await approveDeletion(B, 'mass_delete_in');
     await untilSameShape(30_000);
     expect(await countLat(B, folderB.id)).toBe(beforeB - 25);
   }, 180_000);
@@ -453,7 +475,7 @@ describe('D03/U04 재시작·오프라인 편집·팝업', () => {
       (await A.bookmarks<BmNode[]>('search', { url: 'https://example.com/offline' })).length,
     ).toBe(0);
     const dir = B.userDataDir;
-    await B.close();
+    await B.close({ keepProfile: true });
     B = await launch('aside', { userDataDir: dir });
     const s = await state(B);
     expect(s.account?.email).toBe(email);
@@ -486,6 +508,8 @@ describe('D03/U04 재시작·오프라인 편집·팝업', () => {
       await p.setViewportSize({ width: 1100, height: 800 });
       for (const route of ['/', '/folders', '/history', '/recovery', '/settings']) {
         await p.goto(`chrome-extension://${b.extensionId}/app.html#${route}`);
+        await p.getByRole('navigation').waitFor();
+        if (route === '/') await p.getByText(email, { exact: false }).first().waitFor();
         await p.waitForTimeout(1500);
         await p.screenshot({
           path: `${SHOTS_DIR}/app-${name}${route === '/' ? '-overview' : route.replace('/', '-')}.png`,
@@ -494,6 +518,8 @@ describe('D03/U04 재시작·오프라인 편집·팝업', () => {
       }
       await p.emulateMedia({ colorScheme: 'dark' });
       await p.goto(`chrome-extension://${b.extensionId}/app.html#/`);
+      await p.getByRole('navigation').waitFor();
+      await p.getByText(email, { exact: false }).first().waitFor();
       await p.waitForTimeout(1500);
       await p.screenshot({ path: `${SHOTS_DIR}/app-${name}-overview-dark.png`, fullPage: true });
       await p.close();

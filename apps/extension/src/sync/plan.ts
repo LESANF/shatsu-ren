@@ -44,7 +44,7 @@ export async function localFingerprint(tree: LocalTree): Promise<string> {
   const walk = (id: string, depth: number) => {
     for (const c of tree.children.get(id) ?? []) {
       const n = tree.nodes.get(c)!;
-      lines.push(`${depth}\t${n.kind}\t${n.title}\t${n.url ?? ''}`);
+      lines.push(JSON.stringify([depth, n.id, n.parentId, n.kind, n.title, n.url, n.unmodifiable]));
       walk(c, depth + 1);
     }
   };

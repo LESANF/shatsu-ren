@@ -1,5 +1,5 @@
 import { chromium, type BrowserContext, type Page, type Worker } from 'playwright';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -27,7 +27,7 @@ export interface ExtBrowser {
   app: Page; // app.html (메시지 전송·UI)
   send<T = unknown>(req: Record<string, unknown>): Promise<T>;
   bookmarks<T>(fn: string, ...args: unknown[]): Promise<T>;
-  close(): Promise<void>;
+  close(opts?: { keepProfile?: boolean }): Promise<void>;
   version: string;
   userDataDir: string;
 }
@@ -37,13 +37,18 @@ export async function launch(
   kind: BrowserKind,
   opts: { extDir?: string; userDataDir?: string } = {},
 ): Promise<ExtBrowser> {
-  return Promise.race([
-    launchInner(kind, opts),
-    new Promise<ExtBrowser>((_, rej) =>
-      setTimeout(() => rej(new Error(`launch ${kind} timed out after 60s`)), 60_000),
-    ),
-  ]);
+  // Aside 는 직전 인스턴스 종료 직후 실행이 걸릴 수 있어 1회 재시도한다
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await launchInner(kind, opts);
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      console.log(`[launch ${kind}] retry after failure: ${(e as Error).message}`);
+      await new Promise((r) => setTimeout(r, 20_000));
+    }
+  }
 }
+const ownedProfiles = new Set<string>();
 
 async function launchInner(
   kind: BrowserKind,
@@ -51,89 +56,115 @@ async function launchInner(
 ): Promise<ExtBrowser> {
   const extDir = opts.extDir ?? EXT_DIR;
   const userDataDir = opts.userDataDir ?? mkdtempSync(join(tmpdir(), `shatsu-${kind}-`));
+  if (!opts.userDataDir) ownedProfiles.add(userDataDir);
   const t0 = Date.now();
   const step = (m: string) => console.log(`[launch ${kind}] +${Date.now() - t0}ms ${m}`);
   step('start');
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    ...EXEC[kind],
-    headless: false,
-    args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, '--no-first-run'],
-    ignoreDefaultArgs: [
-      '--disable-extensions',
-      '--disable-component-extensions-with-background-pages',
-    ],
-  });
-  step('context ready');
-  let closed = false;
-  context.on('close', () => {
-    closed = true;
-  });
-  // 내장 component extension(예: Google Network Speech) 의 worker 가 먼저 잡힐 수 있어 우리 background.js 를 폴링으로 찾는다
-  // Aside 는 자체 내부 확장 worker 도 background.js 라서 manifest 이름으로 식별한다
-  const isOurs = async (w: Worker) =>
-    w.url().endsWith('/background.js') &&
-    (await Promise.race([
-      w.evaluate(() => chrome.runtime.getManifest().name).catch(() => ''),
-      new Promise<string>((r) => setTimeout(() => r(''), 2000)),
-    ])) === 'shatsu-ren';
-  let worker: Worker | undefined;
-  const t1 = Date.now();
-  while (!worker && Date.now() - t1 < 30_000) {
-    if (closed) throw new Error(`${kind} context closed during launch`);
-    for (const w of context.serviceWorkers())
-      if (await isOurs(w)) {
-        worker = w;
-        break;
-      }
-    if (!worker) await new Promise((r) => setTimeout(r, 200));
+  const context = await chromium
+    .launchPersistentContext(userDataDir, {
+      ...EXEC[kind],
+      headless: false,
+      timeout: 30000,
+      args: [
+        `--disable-extensions-except=${extDir}`,
+        `--load-extension=${extDir}`,
+        '--no-first-run',
+      ],
+      ignoreDefaultArgs: [
+        '--disable-extensions',
+        '--disable-component-extensions-with-background-pages',
+      ],
+    })
+    .catch((error) => {
+      if (!opts.userDataDir && ownedProfiles.delete(userDataDir))
+        rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      throw error;
+    });
+  try {
+    step('context ready');
+    let closed = false;
+    context.on('close', () => {
+      closed = true;
+    });
+    // 내장 component extension(예: Google Network Speech) 의 worker 가 먼저 잡힐 수 있어 우리 background.js 를 폴링으로 찾는다
+    // Aside 는 자체 내부 확장 worker 도 background.js 라서 manifest 이름으로 식별한다
+    const isOurs = async (w: Worker) =>
+      w.url().endsWith('/background.js') &&
+      (await Promise.race([
+        w.evaluate(() => chrome.runtime.getManifest().name).catch(() => ''),
+        new Promise<string>((r) => setTimeout(() => r(''), 2000)),
+      ])) === 'shatsu-ren';
+    let worker: Worker | undefined;
+    const t1 = Date.now();
+    while (!worker && Date.now() - t1 < 30_000) {
+      if (closed) throw new Error(`${kind} context closed during launch`);
+      for (const w of context.serviceWorkers())
+        if (await isOurs(w)) {
+          worker = w;
+          break;
+        }
+      if (!worker) await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!worker)
+      throw new Error(
+        'shatsu-ren service worker not found (workers: ' +
+          context
+            .serviceWorkers()
+            .map((w) => w.url())
+            .join(', ') +
+          ')',
+      );
+    const extensionId = new URL(worker.url()).host;
+    step('worker found ' + extensionId);
+    await new Promise((r) => setTimeout(r, 1500)); // Aside: 시작 직후 newPage 가 닫힌 타깃을 잡는 경우가 있어 잠시 대기
+    if (closed) throw new Error(`${kind} context closed after launch`);
+    const app = await context.newPage();
+    await app.goto(`chrome-extension://${extensionId}/app.html`, { timeout: 20_000 });
+    step('app page open');
+    const version = await app.evaluate(() => navigator.userAgent);
+    const b: ExtBrowser = {
+      kind,
+      context,
+      extensionId,
+      worker,
+      app,
+      version,
+      userDataDir,
+      async send<T>(req: Record<string, unknown>): Promise<T> {
+        const r = (await app.evaluate((m) => chrome.runtime.sendMessage(m), req)) as {
+          ok: boolean;
+          data?: T;
+          code?: string;
+          message?: string;
+        };
+        if (!r?.ok)
+          throw Object.assign(new Error(`${req.type}: ${r?.code} ${r?.message ?? ''}`), {
+            code: r?.code,
+          });
+        return r.data as T;
+      },
+      bookmarks<T>(fn: string, ...args: unknown[]): Promise<T> {
+        return app.evaluate(
+          ([f, a]) =>
+            (chrome.bookmarks as unknown as Record<string, (...x: unknown[]) => Promise<unknown>>)[
+              f
+            ]!(...a),
+          [fn, args] as [string, unknown[]],
+        ) as Promise<T>;
+      },
+      close: async (closeOpts = {}) => {
+        await context.close();
+        if (!closeOpts.keepProfile && ownedProfiles.delete(userDataDir))
+          rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      },
+    };
+    return b;
+  } catch (error) {
+    await context.close();
+    if (!opts.userDataDir)
+      rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    throw error;
   }
-  if (!worker)
-    throw new Error(
-      'shatsu-ren service worker not found (workers: ' +
-        context
-          .serviceWorkers()
-          .map((w) => w.url())
-          .join(', ') +
-        ')',
-    );
-  const extensionId = new URL(worker.url()).host;
-  step('worker found ' + extensionId);
-  await new Promise((r) => setTimeout(r, 1500)); // Aside: 시작 직후 newPage 가 닫힌 타깃을 잡는 경우가 있어 잠시 대기
-  if (closed) throw new Error(`${kind} context closed after launch`);
-  const app = await context.newPage();
-  await app.goto(`chrome-extension://${extensionId}/app.html`, { timeout: 20_000 });
-  step('app page open');
-  const version = await app.evaluate(() => navigator.userAgent);
-  const b: ExtBrowser = {
-    kind,
-    context,
-    extensionId,
-    worker,
-    app,
-    version,
-    userDataDir,
-    async send<T>(req: Record<string, unknown>): Promise<T> {
-      const r = (await app.evaluate((m) => chrome.runtime.sendMessage(m), req)) as {
-        ok: boolean;
-        data?: T;
-        code?: string;
-        message?: string;
-      };
-      if (!r?.ok) throw new Error(`${req.type}: ${r?.code} ${r?.message ?? ''}`);
-      return r.data as T;
-    },
-    bookmarks<T>(fn: string, ...args: unknown[]): Promise<T> {
-      return app.evaluate(
-        ([f, a]) =>
-          (chrome.bookmarks as unknown as Record<string, (...x: unknown[]) => Promise<unknown>>)[
-            f
-          ]!(...a),
-        [fn, args] as [string, unknown[]],
-      ) as Promise<T>;
-    },
-    close: () => context.close(),
-  };
-  return b;
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

@@ -14,7 +14,7 @@ import { PROTOCOL_VERSION, subtreeDigestOf } from 'shatsu-ren-protocol';
 import { getMeta, setMeta, StorageError, type Db } from '../storage/db';
 import { api, getSubTree, type LocalTree } from './browser';
 import { prepareContext, type Ctx, type CtxResult } from './context';
-import { reconcile, type LocalAction, type OpDraft } from './reconcile';
+import { deletionFingerprint, reconcile, type LocalAction, type OpDraft } from './reconcile';
 import { DomainError, rpc, TransportError } from './rpc';
 import type {
   Binding,
@@ -62,9 +62,10 @@ export class Engine {
   requestSync(reason: RunReason, opts: { force?: boolean } = {}): Promise<RunResult> {
     if (this.running && this.queued && !opts.force) return this.chain as Promise<RunResult>;
     this.queued = true;
+    const epoch = this.epoch;
     const p = this.chain.then(async () => {
       this.queued = false;
-      return this.runOnce(reason, opts);
+      return this.runOnce(reason, opts, epoch);
     });
     this.chain = p.catch(() => undefined);
     return p;
@@ -74,9 +75,12 @@ export class Engine {
     this.epoch++;
   }
 
-  private async runOnce(reason: RunReason, opts: { force?: boolean }): Promise<RunResult> {
+  private async runOnce(
+    reason: RunReason,
+    opts: { force?: boolean },
+    epoch: number,
+  ): Promise<RunResult> {
     const startedAt = Date.now();
-    const epoch = this.epoch;
     this.running = { reason, startedAt, phase: 'prepare' };
     const done = (outcome: RunResult['outcome'], extra: Partial<RunResult> = {}): RunResult => {
       const r: RunResult = {
@@ -120,7 +124,13 @@ export class Engine {
       const r = await this.execute(ctx, reason, opts, epoch);
       return done(r.outcome, r);
     } catch (e) {
-      if (e instanceof StorageError) {
+      if (
+        e instanceof StorageError ||
+        (e instanceof Error &&
+          ['QuotaExceededError', 'InvalidStateError', 'UnknownError', 'AbortError'].includes(
+            e.name,
+          ))
+      ) {
         await setMeta(ctx.db, 'lastError', {
           code: 'STORAGE_FAILED',
           message: e.message,
@@ -145,6 +155,7 @@ export class Engine {
         return done(outcome, { code: e.kind, message: e.message });
       }
       if (e instanceof DomainError) {
+        if (e.error.code === 'RATE_LIMITED') await this.scheduleRetry(ctx.db, e.error);
         await setMeta(ctx.db, 'lastError', { code: e.error.code, at: Date.now() });
         return done(
           e.error.code === 'DEVICE_REVOKED' || e.error.code === 'SESSION_INVALID'
@@ -167,13 +178,13 @@ export class Engine {
     this.hooks.onProgress?.({ phase: p, ...extra });
   }
 
-  private async scheduleRetry(db: Db, e: TransportError) {
+  private async scheduleRetry(db: Db, e: { retryAfterSeconds?: number | undefined }) {
     const attempts = ((await getMeta<number>(db, 'retryAttempts')) ?? 0) + 1;
     const minutes = e.retryAfterSeconds
       ? e.retryAfterSeconds / 60
       : BACKOFF_MIN[Math.min(attempts, BACKOFF_MIN.length) - 1]!;
     const jitter = 1 + (Math.random() - 0.5) * 0.4;
-    const at = Date.now() + minutes * 60_000 * jitter;
+    const at = Date.now() + Math.max(minutes * 60_000 * jitter, (e.retryAfterSeconds ?? 0) * 1000);
     await setMeta(db, 'retryAttempts', attempts);
     await setMeta(db, 'nextRetryAt', at);
     await chrome.alarms.create(RETRY_ALARM, { when: at });
@@ -188,17 +199,18 @@ export class Engine {
   ): Promise<Omit<RunResult, 'reason' | 'startedAt' | 'finishedAt'>> {
     const { db, client, account } = ctx;
     const settings = await (await import('./context')).getSettings();
-    const bindings = await db.getAll('bindings');
+    let bindings = await db.getAll('bindings');
     const activeBindings = bindings.filter((b) => b.status === 'active');
-    if (
-      !settings.autoSync &&
-      reason !== 'manual' &&
-      reason !== 'merge' &&
-      reason !== 'login' &&
-      !opts.force
-    ) {
-      return { outcome: 'skipped', message: 'autoSync off', sent: 0, applied: 0, held: 0 };
-    }
+    const nextRetryAt = await getMeta<number>(db, 'nextRetryAt');
+    const transferEnabled =
+      !(nextRetryAt && nextRetryAt > Date.now() && !opts.force && reason !== 'manual') &&
+      !(
+        !settings.autoSync &&
+        reason !== 'manual' &&
+        reason !== 'merge' &&
+        reason !== 'login' &&
+        !opts.force
+      );
     // 1. generation / 프로토콜
     const gen = (await getMeta<string>(db, 'generationId')) ?? null;
     if (gen && gen !== account.generationId) {
@@ -220,19 +232,25 @@ export class Engine {
     // 2. 미완료 journal 복구
     this.phase('journal');
     await this.recoverJournal(db, bindings);
+    bindings = await db.getAll('bindings');
+    const interrupted = await db.getAllFromIndex('outbox', 'byStatus', 'in_flight');
+    const recovery = db.transaction('outbox', 'readwrite');
+    for (const entry of interrupted) await recovery.store.put({ ...entry, status: 'pending' });
+    await recovery.done;
 
     // 3. 서버 변경 수신 (changes → shadow). 오프라인이면 로컬 intent(outbox) 는 계속 기록하고 전송만 건너뛴다.
     this.phase('pull');
     let pulled = false;
-    let offlineError: TransportError | null = null;
+    let offlineError: TransportError | DomainError | null = null;
     try {
-      pulled = await this.pull(ctx);
+      if (transferEnabled) pulled = await this.pull(ctx);
     } catch (e) {
       if (
         e instanceof TransportError &&
         (e.kind === 'offline' || e.kind === 'server' || e.kind === 'timeout')
       )
         offlineError = e;
+      else if (e instanceof DomainError && e.error.code === 'RATE_LIMITED') offlineError = e;
       else throw e;
     }
     if (epoch !== this.epoch) return { outcome: 'skipped', sent: 0, applied: 0, held: 0 };
@@ -242,13 +260,16 @@ export class Engine {
       applied = 0,
       held = 0;
     const collections = new Map((await db.getAll('collections')).map((c) => [c.id, c]));
-    const newOps: OutboxEntry[] = [];
+    let opIndex = 0;
+    const runBase = Date.now();
     let pendingApply = 0;
     for (const binding of bindings) {
       if (binding.status === 'root_missing') {
         // 루트가 다시 보이면(브라우저 기동 직후 일시적 실패 등) 자동 재개. 사용자가 다시 선택할 때까지 삭제 전파는 없다.
-        if (await getSubTree(binding.localRootId)) { await db.put('bindings', { ...binding, status: 'active' }); binding.status = 'active'; }
-        else continue;
+        if (await getSubTree(binding.localRootId)) {
+          await db.put('bindings', { ...binding, status: 'active' });
+          binding.status = 'active';
+        } else continue;
       }
       if (binding.status !== 'active') continue;
       const coll = collections.get(binding.collectionId);
@@ -299,17 +320,24 @@ export class Engine {
       const approvedIn = new Set<string>();
       for (const r of await db.getAll('reviews')) {
         if (r.collectionId !== binding.collectionId || r.status !== 'resolved') continue;
+        if (
+          !r.fingerprint ||
+          r.fingerprint !== deletionFingerprint(r.items, local, shadowNodes, shadowOrders)
+        )
+          continue;
         if (r.kind === 'mass_delete_out' && r.resolution === 'approve')
           r.items.forEach((i) => i.globalId && approvedOut.add(i.globalId));
         if (r.kind === 'mass_delete_in' && r.resolution === 'approve')
           r.items.forEach((i) => i.globalId && approvedIn.add(i.globalId));
       }
       const existsElsewhere = new Set<string>();
+      const ignoreElsewhere = new Set((await getMeta<string[]>(db, 'ignoreElsewhere')) ?? []);
       for (const o of observed.values())
         if (
           o.kind !== 'root' &&
           !local.nodes.has(o.localId) &&
           o.globalId &&
+          !ignoreElsewhere.has(o.localId) &&
           (await api.get(o.localId))
         )
           existsElsewhere.add(o.localId);
@@ -332,16 +360,35 @@ export class Engine {
       held += out.stats.held;
 
       // base 갱신 / 충돌 / 검토 기록 (브라우저 변경 전)
-      const tx = db.transaction(['observed', 'conflicts', 'reviews'], 'readwrite');
+      const newOps: OutboxEntry[] = [];
+      for (const d of out.ops) {
+        const entry = await this.draftToEntry(
+          db,
+          binding,
+          account.generationId,
+          d,
+          shadowNodes,
+          shadowOrders,
+        );
+        if (entry) newOps.push({ ...entry, createdAt: runBase + opIndex++ * 0.001 });
+      }
+      const tx = db.transaction(['observed', 'conflicts', 'reviews', 'outbox'], 'readwrite');
+      for (const entry of newOps) await tx.objectStore('outbox').put(entry);
       for (const id of out.observedDeletes) await tx.objectStore('observed').delete(id);
       for (const o of out.observedUpserts) await tx.objectStore('observed').put(o);
       for (const c of out.conflicts) {
-        const id = `${binding.collectionId}:${c.globalId}`;
-        if (!(await tx.objectStore('conflicts').get(id)))
+        const id = crypto.randomUUID();
+        if ((await tx.objectStore('conflicts').get(id))?.status !== 'open')
           await tx.objectStore('conflicts').put({
             id,
             collectionId: binding.collectionId,
             ...c,
+            fingerprint: deletionFingerprint(
+              [{ globalId: c.globalId, localId: c.localId, title: c.base.title, kind: c.nodeKind }],
+              local,
+              shadowNodes,
+              shadowOrders,
+            ),
             status: 'open',
             createdAt: Date.now(),
           });
@@ -353,6 +400,9 @@ export class Engine {
           status: 'open',
           createdAt: Date.now(),
           ...r,
+          ...(r.kind.startsWith('mass_delete')
+            ? { fingerprint: deletionFingerprint(r.items, local, shadowNodes, shadowOrders) }
+            : {}),
         });
       await tx.done;
       if (out.reviews.some((r) => r.kind.startsWith('mass_delete')))
@@ -360,34 +410,24 @@ export class Engine {
 
       // 원격 → 브라우저 적용 (journal)
       pendingApply += out.localActions.length;
-      const ok = await this.applyLocal(
-        ctx,
-        binding,
-        coll.rootNodeId,
-        local,
-        out.localActions,
-        observed,
-      );
+      const ok = transferEnabled
+        ? await this.applyLocal(
+            ctx,
+            binding,
+            coll.rootNodeId,
+            local,
+            out.localActions,
+            observed,
+            epoch,
+          )
+        : 0;
       applied += ok;
       pendingApply -= ok;
 
-      // 서버 → outbox
-      for (const d of out.ops) {
-        const entry = await this.draftToEntry(
-          db,
-          binding,
-          account.generationId,
-          d,
-          shadowNodes,
-          shadowOrders,
-        );
-        if (entry) newOps.push(entry);
-      }
       if (epoch !== this.epoch) return { outcome: 'skipped', sent, applied, held };
     }
-    const txo = db.transaction('outbox', 'readwrite');
-    for (const e of newOps) await txo.store.put(e);
-    await txo.done;
+    if (!transferEnabled)
+      return { outcome: 'skipped', message: 'autoSync off', sent, applied, held };
 
     if (offlineError) throw offlineError; // outbox 는 기록됐고 retry alarm 이 잡힌다
     // 6~7. outbox 제출 (생성 순서, 묶음 100)
@@ -419,6 +459,27 @@ export class Engine {
       };
     }
     await setMeta(db, 'loopCount', 0);
+    const cleanup = db.transaction(['outbox', 'journal', 'conflicts', 'reviews'], 'readwrite');
+    const completedOps = (
+      await cleanup.objectStore('outbox').index('byStatus').getAll('done')
+    ).sort((a, b) => b.createdAt - a.createdAt);
+    const completedJournal = (await cleanup.objectStore('journal').index('byStatus').getAll('done'))
+      .filter((j) => j.collectionId)
+      .sort((a, b) => b.startedAt - a.startedAt);
+    const resolvedConflicts = (
+      await cleanup.objectStore('conflicts').index('byStatus').getAll('resolved')
+    ).sort((a, b) => (b.resolvedAt ?? 0) - (a.resolvedAt ?? 0));
+    const resolvedReviews = (
+      await cleanup.objectStore('reviews').index('byStatus').getAll('resolved')
+    ).sort((a, b) => (b.resolvedAt ?? 0) - (a.resolvedAt ?? 0));
+    for (const op of completedOps.slice(500)) await cleanup.objectStore('outbox').delete(op.opId);
+    for (const journal of completedJournal.slice(500))
+      await cleanup.objectStore('journal').delete(journal.id);
+    for (const conflict of resolvedConflicts.slice(500))
+      await cleanup.objectStore('conflicts').delete(conflict.id);
+    for (const review of resolvedReviews.slice(500))
+      await cleanup.objectStore('reviews').delete(review.id);
+    await cleanup.done;
     return { outcome: 'ok', sent, applied, held };
   }
 
@@ -514,6 +575,7 @@ export class Engine {
     local: LocalTree,
     actions: LocalAction[],
     observed: Map<string, ObservedNode>,
+    epoch = this.epoch,
   ): Promise<number> {
     const { db } = ctx;
     const g2l = new Map<string, string>();
@@ -528,6 +590,7 @@ export class Engine {
     let count = 0;
     let idx = 0;
     for (const a of sorted) {
+      if (epoch !== this.epoch) break;
       this.phase('apply', { done: idx++, total: sorted.length });
       const jid = crypto.randomUUID();
       const journal = async (e: Partial<JournalEntry>) =>
@@ -539,8 +602,14 @@ export class Engine {
           startedAt: Date.now(),
           ...e,
         } as JournalEntry);
-      const finish = async (e: Partial<JournalEntry> = {}) =>
-        db.put('journal', { ...(await db.get('journal', jid))!, status: 'done', ...e });
+      const finish = async (e: Partial<JournalEntry> = {}, observedNode?: ObservedNode) => {
+        const tx = db.transaction(['journal', 'observed'], 'readwrite');
+        if (observedNode) await tx.objectStore('observed').put(observedNode);
+        await tx
+          .objectStore('journal')
+          .put({ ...(await tx.objectStore('journal').get(jid))!, status: 'done', ...e });
+        await tx.done;
+      };
       try {
         if (a.type === 'create') {
           const parentLocalId = g2l.get(a.parentGlobalId);
@@ -550,24 +619,27 @@ export class Engine {
             parentLocalId,
             expected: { title: a.title, url: a.url, kind: a.kind },
           });
+          if (epoch !== this.epoch) break;
           const created = await api.create({
             parentId: parentLocalId,
             title: a.title,
             ...(a.kind === 'bookmark' && a.url ? { url: a.url } : {}),
           });
-          await finish({ resultLocalId: created.id });
           g2l.set(a.globalId, created.id);
-          await db.put('observed', {
-            localId: created.id,
-            globalId: a.globalId,
-            collectionId: binding.collectionId,
-            parentLocalId,
-            kind: a.kind,
-            title: a.title,
-            url: a.kind === 'bookmark' ? a.url : null,
-            revision: a.revision,
-            ...(a.kind === 'folder' ? { childOrder: [], orderRevision: -1 } : {}),
-          });
+          await finish(
+            { resultLocalId: created.id },
+            {
+              localId: created.id,
+              globalId: a.globalId,
+              collectionId: binding.collectionId,
+              parentLocalId,
+              kind: a.kind,
+              title: a.title,
+              url: a.kind === 'bookmark' ? a.url : null,
+              revision: a.revision,
+              ...(a.kind === 'folder' ? { childOrder: [], orderRevision: -1 } : {}),
+            },
+          );
           local.nodes.set(created.id, {
             id: created.id,
             parentId: parentLocalId,
@@ -594,36 +666,46 @@ export class Engine {
           const changes: { title?: string; url?: string } = {};
           if (a.title !== undefined) changes.title = a.title;
           if (a.url !== undefined) changes.url = a.url;
+          if (epoch !== this.epoch) break;
           const r = await api.update(a.localId, changes);
-          await finish();
           const o = observed.get(a.localId);
-          if (o)
-            await db.put('observed', {
-              ...o,
-              title: r.title,
-              url: r.url ?? null,
-              revision: a.revision,
-            });
+          await finish(
+            {},
+            o
+              ? {
+                  ...o,
+                  title: r.title,
+                  url: r.url ?? null,
+                  revision: a.revision,
+                }
+              : undefined,
+          );
         } else if (a.type === 'move') {
           const parentLocalId = g2l.get(a.parentGlobalId);
           if (!parentLocalId) continue;
           await journal({ globalId: a.globalId, localId: a.localId, parentLocalId });
+          if (epoch !== this.epoch) break;
           await api.move(a.localId, { parentId: parentLocalId });
-          await finish();
           const o = observed.get(a.localId);
-          if (o) await db.put('observed', { ...o, parentLocalId, revision: a.revision });
+          await finish({}, o ? { ...o, parentLocalId, revision: a.revision } : undefined);
         } else if (a.type === 'reorder') {
           await journal({ globalId: a.parentGlobalId, localId: a.parentLocalId });
           const current = await api.getChildren(a.parentLocalId);
+          const currentIds = new Set(current.map((c) => c.id));
           const byGlobal = a.orderedGlobalIds
             .map((g) => g2l.get(g))
-            .filter((x): x is string => !!x && current.some((c) => c.id === x));
-          const rest = current.map((c) => c.id).filter((id) => !byGlobal.includes(id));
+            .filter((x): x is string => !!x && currentIds.has(x));
+          const orderedIds = new Set(byGlobal);
+          const rest = current.map((c) => c.id).filter((id) => !orderedIds.has(id));
           const target = [...byGlobal, ...rest];
+          const cur = current.map((c) => c.id);
           for (let i = 0; i < target.length; i++) {
-            const cur = await api.getChildren(a.parentLocalId);
-            if (cur[i]?.id !== target[i])
+            if (epoch !== this.epoch) return count;
+            if (cur[i] !== target[i]) {
               await api.move(target[i]!, { parentId: a.parentLocalId, index: i });
+              cur.splice(cur.indexOf(target[i]!), 1);
+              cur.splice(i, 0, target[i]!);
+            }
           }
           await finish();
           const o =
@@ -634,17 +716,36 @@ export class Engine {
             await db.put('observed', { ...o, childOrder: target, orderRevision: a.orderRevision });
         } else if (a.type === 'remove') {
           await journal({ globalId: a.globalId, localId: a.localId });
+          await this.backup(db, binding, 'mass_change');
           // 삭제 직전 로컬 자식 재확인 (서버가 모르는 항목이 있으면 보류)
-          const kids = await api.getChildren(a.localId);
-          const unknown = kids.some((k) => {
-            const o = observed.get(k.id);
-            return !o || !o.globalId || o.revision === 0;
-          });
+          const fresh = await getSubTree(a.localId);
+          const expectedIds = new Set<string>();
+          const collect = (id: string) => {
+            expectedIds.add(id);
+            for (const child of local.children.get(id) ?? []) collect(child);
+          };
+          collect(a.localId);
+          const unknown =
+            fresh &&
+            (fresh.nodes.size !== expectedIds.size ||
+              [...fresh.nodes.values()].some((n) => {
+                const old = local.nodes.get(n.id);
+                return (
+                  !expectedIds.has(n.id) ||
+                  !old ||
+                  old.title !== n.title ||
+                  old.url !== n.url ||
+                  (n.id !== a.localId && old.parentId !== n.parentId) ||
+                  JSON.stringify(local.children.get(n.id) ?? []) !==
+                    JSON.stringify(fresh.children.get(n.id) ?? [])
+                );
+              }));
           if (unknown) {
             await finish({ status: 'failed', error: 'unsent children' });
             continue;
           }
-          const node = await api.get(a.localId);
+          const node = fresh?.nodes.get(a.localId);
+          if (epoch !== this.epoch) break;
           if (node) {
             if (node.url) await api.remove(a.localId);
             else await api.removeTree(a.localId);
@@ -660,6 +761,14 @@ export class Engine {
         }
         count++;
       } catch (e) {
+        if (
+          e instanceof StorageError ||
+          (e instanceof Error &&
+            ['QuotaExceededError', 'AbortError', 'UnknownError', 'InvalidStateError'].includes(
+              e.name,
+            ))
+        )
+          throw e;
         await db.put('journal', {
           ...(await db.get('journal', jid))!,
           status: 'failed',
@@ -686,8 +795,40 @@ export class Engine {
 
   /** worker 재기동 후: 'started' 로 남은 journal 처리. create 는 결과를 확인할 수 없으면 복구 필요. */
   private async recoverJournal(db: Db, bindings: Binding[]) {
+    for (const j of await db.getAllFromIndex('journal', 'byStatus', 'done')) {
+      if (
+        j.action !== 'create' ||
+        !j.resultLocalId ||
+        !j.globalId ||
+        (await db.getFromIndex('observed', 'byGlobal', j.globalId))
+      )
+        continue;
+      const node = await api.get(j.resultLocalId);
+      const shadow = await db.get('shadow_nodes', j.globalId);
+      if (
+        node &&
+        shadow &&
+        !shadow.deletedAt &&
+        node.parentId === j.parentLocalId &&
+        node.title === j.expected?.title &&
+        (node.url ?? null) === (j.expected?.url ?? null)
+      ) {
+        await db.put('observed', {
+          localId: node.id,
+          globalId: shadow.id,
+          collectionId: j.collectionId,
+          parentLocalId: node.parentId ?? null,
+          kind: node.url ? 'bookmark' : 'folder',
+          title: node.title,
+          url: node.url ?? null,
+          revision: shadow.revision,
+          ...(node.url ? {} : { childOrder: [], orderRevision: -1 }),
+        });
+      }
+    }
     const started = await db.getAllFromIndex('journal', 'byStatus', 'started');
     for (const j of started) {
+      if (!j.collectionId || !j.globalId) continue;
       const binding = bindings.find((b) => b.collectionId === j.collectionId);
       if (j.action === 'create' && j.parentLocalId && j.globalId) {
         const already = await db.getFromIndex('observed', 'byGlobal', j.globalId);
@@ -841,14 +982,15 @@ export class Engine {
 
   private async push(ctx: Ctx, epoch: number): Promise<{ sent: number }> {
     const { db, client, account } = ctx;
-    const pausedCollections = new Set(
-      (await db.getAll('bindings')).filter((b) => b.status !== 'active').map((b) => b.collectionId),
+    const activeCollections = new Set(
+      (await db.getAll('bindings')).filter((b) => b.status === 'active').map((b) => b.collectionId),
     );
     const pending = (await db.getAllFromIndex('outbox', 'byStatus', 'pending'))
-      .filter((o) => !pausedCollections.has(o.collectionId))
+      .filter((o) => activeCollections.has(o.collectionId))
       .sort((a, b) => a.createdAt - b.createdAt);
     let sent = 0;
     for (let i = 0; i < pending.length; i += 100) {
+      if (epoch !== this.epoch) break;
       const batch = pending.slice(i, i + 100);
       const tx = db.transaction('outbox', 'readwrite');
       for (const o of batch)
@@ -899,7 +1041,6 @@ export class Engine {
   private async applyReceipt(db: Db, entry: OutboxEntry, receipt: Receipt) {
     const op = entry.env.op;
     if (receipt.status === 'applied' || receipt.status === 'noop') {
-      await db.put('outbox', { ...entry, status: 'done', receipt });
       // base 갱신: 제안값 + 서버 revision
       if (op.kind === 'create' || op.kind === 'patch' || op.kind === 'move') {
         const o = await db.getFromIndex('observed', 'byGlobal', op.nodeId);
@@ -920,10 +1061,16 @@ export class Engine {
       } else if (op.kind === 'reorder') {
         const o = await db.getFromIndex('observed', 'byGlobal', op.parentId);
         if (o && receipt.orderRevision !== undefined) {
-          const kids = await api.getChildren(o.localId);
+          const mapping = new Map(
+            (await db.getAllFromIndex('observed', 'byCollection', entry.collectionId)).flatMap(
+              (node) => (node.globalId ? [[node.globalId, node.localId] as const] : []),
+            ),
+          );
           await db.put('observed', {
             ...o,
-            childOrder: kids.map((k) => k.id),
+            childOrder: op.orderedChildIds.flatMap((id) =>
+              mapping.has(id) ? [mapping.get(id)!] : [],
+            ),
             orderRevision: receipt.orderRevision,
           });
         }
@@ -939,6 +1086,7 @@ export class Engine {
           await tx.done;
         }
       }
+      await db.put('outbox', { ...entry, status: 'done', receipt });
       return;
     }
     if (receipt.status === 'not_attempted') {
@@ -985,7 +1133,7 @@ export class Engine {
       createdAt: Date.now(),
       reason,
       collectionId: binding?.collectionId ?? null,
-      bytes: json.length,
+      bytes: new TextEncoder().encode(json).byteLength,
       tree,
     });
     // 최근 5개 / 100 MiB

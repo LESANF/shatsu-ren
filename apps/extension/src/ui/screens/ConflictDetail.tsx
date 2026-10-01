@@ -23,7 +23,12 @@ export function ConflictDetail({
   }, [id, go, err]);
   if (!c) return <p className="muted">{d.common.loading}</p>;
   const resolve = (r: 'mine' | 'theirs' | 'both') =>
-    void run({ type: 'resolveConflict', id, resolution: r }).then((res) => {
+    void run({
+      type: 'resolveConflict',
+      id,
+      resolution: r,
+      ...(c.fingerprint ? { fingerprint: c.fingerprint } : {}),
+    }).then((res) => {
       if (res) {
         void refresh();
         go('/folders');
@@ -42,6 +47,26 @@ export function ConflictDetail({
         </a>
       </div>
       <p>{d.conflict.kinds[c.kind]}</p>
+      {c.orderTitles && (
+        <div className="row">
+          <div>
+            <h3>{d.conflict.myChange}</h3>
+            <ol>
+              {c.orderTitles.local.map((title, i) => (
+                <li key={i}>{title}</li>
+              ))}
+            </ol>
+          </div>
+          <div>
+            <h3>{d.conflict.serverChange}</h3>
+            <ol>
+              {c.orderTitles.remote.map((title, i) => (
+                <li key={i}>{title}</li>
+              ))}
+            </ol>
+          </div>
+        </div>
+      )}
       <table className="table">
         <thead>
           <tr>
