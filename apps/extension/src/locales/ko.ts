@@ -93,6 +93,22 @@ export const ko = {
     privacyLink: '개인정보 안내',
     signedInAs: '{email} 로 로그인됨',
     changeAccount: '계정 바꾸기',
+    startTitle: '북마크바 맨 앞에 shatsu-ren 폴더를 만들어요',
+    startBody:
+      '이 폴더가 모든 브라우저에서 똑같이 맞춰져요. 다른 브라우저에서 연결하면 그 브라우저에도 같은 폴더가 생겨요.',
+    seedCopy: '폴더 내용을 복사해서 시작',
+    seedCopyHint: '아래에서 고른 폴더의 북마크를 shatsu-ren 폴더에 복사해요. 원본은 그대로 남아요.',
+    seedEmpty: '빈 폴더로 시작',
+    seedEmptyHint: '앞으로 shatsu-ren 폴더에 넣는 것만 맞춰져요.',
+    joinTitle: '계정의 shatsu-ren 폴더를 받아요',
+    joinBody:
+      '북마크바 맨 앞에 shatsu-ren 폴더를 만들고 계정의 항목 {n}개를 그대로 받아요. 이 브라우저의 다른 북마크는 건드리지 않아요.',
+    alreadyConnected: '이 브라우저는 이미 연결되어 있어요.',
+    summaryJoin:
+      '북마크바 맨 앞에 shatsu-ren 폴더가 생기고 계정 내용이 들어와요. 이미 shatsu-ren 폴더가 있으면 그 폴더와 합쳐요.',
+    summaryStartCopy:
+      '북마크바 맨 앞에 shatsu-ren 폴더를 만들고 「{local}」의 내용을 복사해 올려요.',
+    summaryStartEmpty: '북마크바 맨 앞에 빈 shatsu-ren 폴더를 만들어요.',
     step1Title: '1. 어떤 공유 폴더와 맞출까요?',
     step1Body:
       '다른 브라우저에서 이미 만든 공유 폴더예요. 다른 브라우저와 똑같이 맞추려면 그 브라우저가 쓰는 공유 폴더를 고르세요.',
