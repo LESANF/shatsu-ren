@@ -315,6 +315,15 @@ export class Engine {
           .filter((c) => c.collectionId === binding.collectionId)
           .map((c) => c.globalId),
       );
+      // 예전 정책(삭제 확인)으로 열린 삭제 검토는 더 이상 필요 없으니 닫는다. 삭제는 이제 그대로 따라간다.
+      for (const r of await db.getAllFromIndex('reviews', 'byStatus', 'open'))
+        if (r.collectionId === binding.collectionId && r.kind.startsWith('mass_delete'))
+          await db.put('reviews', {
+            ...r,
+            status: 'resolved',
+            resolution: 'policy',
+            resolvedAt: Date.now(),
+          });
       const openReviews = (await db.getAllFromIndex('reviews', 'byStatus', 'open')).filter(
         (r) => r.collectionId === binding.collectionId,
       );
