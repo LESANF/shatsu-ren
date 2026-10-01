@@ -640,14 +640,10 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
   const allApproved = deleteDrafts.every(
     (d) => d.kind === 'deleteSubtree' && inp.approvedOutboundDeletes.has(d.globalId),
   );
-  if (deleteDrafts.length && !allApproved) {
-    if (!inp.openReviewKinds.has('mass_delete_out'))
-      out.reviews.push({ kind: 'mass_delete_out', items: deleteItems, scopeCount: mappedCount });
-    out.stats.held += deleteDrafts.length;
-  } else {
-    out.ops.push(...deleteDrafts);
-    out.stats.localDeletes += deleteDrafts.length;
-  }
+  // 삭제는 확인 없이 그대로 따라간다(사용자 결정 2026-10-01). 되돌리기는 서버 휴지통(30일)과 로컬 백업으로.
+  void allApproved;
+  out.ops.push(...deleteDrafts);
+  out.stats.localDeletes += deleteDrafts.length;
 
   // ---- 3. 서버에만 있는 살아 있는 항목 → 로컬 생성 (부모 먼저)
   const remoteNew: NodeRecord[] = [];
@@ -706,25 +702,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     LocalAction,
     { type: 'remove' }
   >[];
-  if (removes.length && !removes.every((r) => inp.approvedInboundDeletes.has(r.globalId))) {
-    out.localActions = out.localActions.filter((a) => a.type !== 'remove');
-    out.stats.held += removes.length;
-    if (!inp.openReviewKinds.has('mass_delete_in'))
-      out.reviews.push({
-        kind: 'mass_delete_in',
-        items: removes.map((r) => {
-          const o = observed.get(r.localId)!;
-          return {
-            globalId: r.globalId,
-            localId: r.localId,
-            title: o.title,
-            kind: o.kind,
-            url: o.url,
-          };
-        }),
-        scopeCount: mappedCount,
-      });
-  }
+  void removes; // 원격 삭제도 확인 없이 적용한다
 
   // ---- 4. 폴더 순서 (자식 집합이 양쪽 동일할 때만)
   const folders = [rootLocal, ...walkOrder.filter((id) => local.nodes.get(id)!.kind === 'folder')];
