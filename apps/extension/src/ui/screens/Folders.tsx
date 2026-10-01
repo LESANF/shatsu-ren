@@ -160,9 +160,11 @@ export function Folders({
       <section className="card stack">
         <div className="row between">
           <h2>{d.nav.folders}</h2>
-          <a className="btn" href="#/onboarding">
-            {d.overview.addFolder}
-          </a>
+          {state.bindings.length === 0 && (
+            <a className="btn" href="#/onboarding">
+              {d.overview.addFolder}
+            </a>
+          )}
         </div>
         {state.bindings.length === 0 ? (
           <p className="muted">{d.binding.none}</p>
