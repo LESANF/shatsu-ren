@@ -389,7 +389,7 @@ begin
   if v_after is not null and (v_after = v_node.id or not exists (select 1 from shatsu.nodes where id = v_after and parent_id = v_parent.id and deleted_at is null)) then
     perform shatsu.fail('ANCHOR_NOT_FOUND', jsonb_build_object('nodeId', v_node.id, 'parentId', v_parent.id));
   end if;
-  if v_node.kind = 'folder' and shatsu.node_depth(v_parent.id) + (select coalesce(max(shatsu.node_depth(s)), 1) from shatsu.live_subtree_ids(v_node.id) s) - shatsu.node_depth(v_node.id) + 1 > (v_lim->>'maxDepth')::int then
+  if shatsu.node_depth(v_parent.id) + (select coalesce(max(shatsu.node_depth(s)), 1) from shatsu.live_subtree_ids(v_node.id) s) - shatsu.node_depth(v_node.id) + 1 > (v_lim->>'maxDepth')::int then
     perform shatsu.fail('LIMIT_EXCEEDED', jsonb_build_object('nodeId', v_node.id, 'limit', 'maxDepth'));
   end if;
   select * into v_new from shatsu.folder_orders where parent_id = v_parent.id for update;
@@ -493,6 +493,9 @@ begin
     perform shatsu.fail('RESTORE_CONFLICT', jsonb_build_object('deletionId', t.deletion_id));
   end if;
   if shatsu.active_count(c.workspace_id) + t.item_count > (v_lim->>'maxActiveNodes')::int then perform shatsu.fail('LIMIT_EXCEEDED', jsonb_build_object('limit', 'maxActiveNodes')); end if;
+  if shatsu.node_depth(v_parent.id) + (select max(shatsu.node_depth(id)) from unnest(v_ids) id) - shatsu.node_depth(t.root_node_id) + 1 > (v_lim->>'maxDepth')::int then
+    perform shatsu.fail('LIMIT_EXCEEDED', jsonb_build_object('limit', 'maxDepth'));
+  end if;
   update shatsu.nodes set deleted_at = null, deletion_id = null, revision = revision + 1 where id = any(v_ids);
   update shatsu.nodes set parent_id = v_parent.id, revision = revision + 1 where id = t.root_node_id;
   -- 내부 순서 복원
@@ -544,6 +547,55 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- apply one (receipt/commit/seq)
+create or replace function shatsu.validate_operation(op jsonb) returns void
+language plpgsql set search_path = '' as $$
+declare
+  v_required text[]; v_field text; v_value jsonb;
+  v_uuid_pattern text := '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
+begin
+  v_required := case op->>'kind'
+    when 'create' then array['nodeId', 'nodeKind', 'parentId', 'title', 'url', 'afterId']
+    when 'patch' then array['nodeId', 'baseRevision', 'patch']
+    when 'move' then array['nodeId', 'baseRevision', 'parentId', 'afterId']
+    when 'reorder' then array['parentId', 'baseOrderRevision', 'orderedChildIds']
+    when 'deleteSubtree' then array['nodeId', 'baseRevision', 'expectedSubtreeDigest']
+    when 'restore' then array['deletionId', 'parentId']
+    when 'createCollection' then array['rootNodeId', 'title']
+    when 'patchCollection' then array['baseRevision', 'title']
+    else null end;
+  if v_required is null or not (op ?& (array['opId', 'collectionId'] || v_required)) then
+    perform shatsu.fail('INVALID_OPERATION');
+  end if;
+  foreach v_field in array array['opId', 'collectionId'] || v_required loop
+    v_value := op->v_field;
+    if v_field in ('opId', 'collectionId', 'nodeId', 'rootNodeId', 'deletionId', 'parentId', 'afterId') then
+      if v_value = 'null'::jsonb and (v_field = 'afterId' or (v_field = 'parentId' and op->>'kind' = 'restore')) then continue; end if;
+      if jsonb_typeof(v_value) is distinct from 'string' or (op->>v_field) !~ v_uuid_pattern then perform shatsu.fail('INVALID_OPERATION'); end if;
+    elsif v_field in ('baseRevision', 'baseOrderRevision') then
+      if jsonb_typeof(v_value) is distinct from 'number' then perform shatsu.fail('INVALID_OPERATION'); end if;
+      if (v_value::text)::numeric < 0 or (v_value::text)::numeric > 2147483647
+         or trunc((v_value::text)::numeric) <> (v_value::text)::numeric then perform shatsu.fail('INVALID_OPERATION'); end if;
+    elsif v_field = 'title' then
+      if jsonb_typeof(v_value) is distinct from 'string' then perform shatsu.fail('INVALID_OPERATION'); end if;
+      if octet_length(op->>v_field) > (shatsu.limits()->>'maxTitleBytes')::int then perform shatsu.fail('LIMIT_EXCEEDED', '{"limit":"maxTitleBytes"}'); end if;
+    elsif v_field = 'nodeKind' then
+      if (op->>'nodeKind') is null or (op->>'nodeKind') not in ('folder', 'bookmark') then perform shatsu.fail('INVALID_OPERATION'); end if;
+    elsif v_field = 'url' then
+      if jsonb_typeof(v_value) is distinct from 'string' and v_value is distinct from 'null'::jsonb then perform shatsu.fail('INVALID_OPERATION'); end if;
+      if op->>'nodeKind' = 'folder' and v_value is distinct from 'null'::jsonb then perform shatsu.fail('INVALID_OPERATION'); end if;
+    elsif v_field = 'expectedSubtreeDigest' then
+      if jsonb_typeof(v_value) is distinct from 'string' or (op->>v_field) !~ '^[0-9a-f]{64}$' then perform shatsu.fail('INVALID_OPERATION'); end if;
+    elsif v_field = 'patch' then
+      if jsonb_typeof(v_value) is distinct from 'object' then perform shatsu.fail('INVALID_OPERATION'); end if;
+      if (v_value ? 'title' and jsonb_typeof(v_value->'title') is distinct from 'string')
+         or (v_value ? 'url' and jsonb_typeof(v_value->'url') is distinct from 'string') then perform shatsu.fail('INVALID_OPERATION'); end if;
+    elsif v_field = 'orderedChildIds' then
+      if jsonb_typeof(v_value) is distinct from 'array' then perform shatsu.fail('INVALID_OPERATION'); end if;
+      if exists (select 1 from jsonb_array_elements(v_value) x where jsonb_typeof(x) is distinct from 'string' or (x #>> '{}') !~ v_uuid_pattern) then perform shatsu.fail('INVALID_OPERATION'); end if;
+    end if;
+  end loop;
+end $$;
+
 -- 호출자는 workspace 행을 FOR UPDATE 로 잠근 상태여야 한다.
 create or replace function shatsu.apply_one(c shatsu.ctx_t, p_env jsonb) returns jsonb
 language plpgsql set search_path = '' as $$
@@ -551,6 +603,14 @@ declare
   op jsonb := p_env->'op'; v_op_id uuid; v_hash text; v_existing shatsu.operation_receipts; v_kind text;
   r jsonb; v_receipt jsonb; v_seq bigint; v_code text; v_detail text; v_lim jsonb := shatsu.limits();
 begin
+  if jsonb_typeof(p_env) is distinct from 'object'
+     or jsonb_typeof(p_env->'protocolVersion') is distinct from 'number'
+     or jsonb_typeof(p_env->'generationId') is distinct from 'string'
+     or (p_env->>'generationId') !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+     or jsonb_typeof(op) is distinct from 'object'
+     or jsonb_typeof(op->'opId') is distinct from 'string' then
+    return jsonb_build_object('opId', op->>'opId', 'status', 'rejected', 'code', 'INVALID_OPERATION');
+  end if;
   if (p_env->>'protocolVersion') is distinct from '1' then
     return jsonb_build_object('opId', op->>'opId', 'status', 'rejected', 'code', 'PROTOCOL_VERSION_MISMATCH');
   end if;
@@ -573,6 +633,7 @@ begin
   end if;
   v_kind := op->>'kind';
   begin
+    perform shatsu.validate_operation(op);
     r := case v_kind
       when 'create' then shatsu.op_create(c, op)
       when 'patch' then shatsu.op_patch(c, op)
@@ -784,7 +845,7 @@ declare
   v_stop boolean := false; v_applied boolean := false; v_lim jsonb := shatsu.limits();
 begin
   c := shatsu.ctx();
-  if jsonb_typeof(p_envs) <> 'array' then perform shatsu.fail('INVALID_OPERATION'); end if;
+  if jsonb_typeof(p_envs) is distinct from 'array' then perform shatsu.fail('INVALID_OPERATION'); end if;
   if jsonb_array_length(p_envs) > (v_lim->>'maxBatchOps')::int or octet_length(p_envs::text) > (v_lim->>'maxOperationBytes')::int then
     perform shatsu.fail('LIMIT_EXCEEDED', '{"limit":"maxBatchOps"}');
   end if;
@@ -831,6 +892,7 @@ language sql security definer set search_path = '' as $$
     where w.owner_user_id = auth.uid() and w.status = 'active'
       and p_topic = 'workspace:' || w.id::text
       and d.auth_session_id = nullif(auth.jwt() ->> 'session_id', '')::uuid
+      and shatsu.session_valid(d.auth_session_id, auth.uid())
       and d.revoked_at is null
   )
 $$;
@@ -886,7 +948,13 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- grants
-revoke all on all functions in schema public from public, anon, authenticated;
+revoke all on function
+  public.sync_register_device(text, text), public.sync_info(), public.sync_devices(),
+  public.sync_revoke_device(uuid), public.sync_snapshot(), public.sync_changes(bigint, int),
+  public.sync_apply_operation(jsonb), public.sync_apply_operations(jsonb), public.sync_trash(),
+  public.shatsu_can_subscribe(text), public.account_deletion_begin(uuid, uuid),
+  public.account_session_created_at(uuid)
+  from public, anon, authenticated;
 grant execute on function public.sync_register_device(text, text) to authenticated;
 grant execute on function public.sync_info() to authenticated;
 grant execute on function public.sync_devices() to authenticated;

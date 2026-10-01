@@ -12,7 +12,7 @@ shatsu-ren (샤츠렌) is an open-source (MIT) Manifest V3 extension that keeps 
 - Realtime: a change in one browser reaches the other in about **0.3 s** on a local stack (p95 measured, 60 samples); a 5-minute check recovers lost signals.
 - First connection shows a preview (what goes where, duplicates kept, unsupported URLs excluded, **0 deletes**) and takes a local backup before applying.
 - Conflicts (same item edited on both sides, delete vs. edit) are never resolved silently; you choose *my change / server change / keep both*.
-- Mass deletes (≥20 items, or ≥5 and ≥20 % of a folder) stop for review on the sending **and** the receiving browser.
+- Every deletion waits for review on the sending **and** receiving browser. Additions and edits continue to sync while a deletion is held; changed content requires a fresh review before approval.
 - 30-day trash restore, local JSON export/import, per-folder pause, disconnect without deleting anything.
 - Korean and English UI, light/dark theme, keyboard operable.
 

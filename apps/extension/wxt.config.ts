@@ -1,4 +1,7 @@
 import { defineConfig } from 'wxt';
+import { createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 
 // 백엔드 기본값: 빌드 환경변수(.env / .env.development). 없으면 "개발 빌드"로 표시하고 설정에서 개인 프로젝트를 연결한다.
 const env = () => ({
@@ -52,4 +55,15 @@ export default defineConfig({
     };
   },
   zip: { artifactTemplate: 'shatsu-ren-{{version}}-{{browser}}.zip' },
+  hooks: {
+    'zip:done': async (_wxt, files) => {
+      for (const file of files)
+        await writeFile(
+          `${file}.sha256`,
+          `${createHash('sha256')
+            .update(await readFile(file))
+            .digest('hex')}  ${basename(file)}\n`,
+        );
+    },
+  },
 });

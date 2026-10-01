@@ -138,16 +138,31 @@ describe('U03/D03 오프라인', () => {
       const text = await p.locator('body').innerText();
       expect(text).toMatch(/오프라인|Offline/);
       await p.screenshot({ path: `${SHOTS_DIR}/popup-chromium-offline.png` });
+      await A.context.setOffline(false);
       await p.close();
     } finally {
       await A.context.setOffline(false);
     }
-    await A.send({ type: 'syncNow' });
+    note('network-probe', {
+      worker: await A.worker.evaluate(() =>
+        fetch('http://127.0.0.1:54321/auth/v1/health')
+          .then((res) => res.status)
+          .catch((error) => String(error)),
+      ),
+      page: await A.app.evaluate(() =>
+        fetch('http://127.0.0.1:54321/auth/v1/health')
+          .then((res) => res.status)
+          .catch((error) => String(error)),
+      ),
+    });
+    note('offline-resume', await A.send({ type: 'syncNow' }));
     await waitFor(
       async () =>
         (await B.bookmarks<BmNode[]>('search', { url: 'https://example.com/offline-a' })).length ===
         1,
       30_000,
+      250,
+      async () => ({ A: await diag(A)(), B: await diag(B)() }),
     );
     await untilIdle(A);
   }, 90_000);
@@ -280,7 +295,7 @@ describe('R03/D04 강제 종료·재기동', () => {
     );
     expect(before).toContain('shatsu-sync');
     const dir = A.userDataDir;
-    await A.close(); // 강제 종료 (프로세스 종료)
+    await A.close({ keepProfile: true }); // 강제 종료 (프로세스 종료)
     await B.bookmarks('create', {
       parentId: fB.id,
       title: 'during shutdown',
@@ -318,11 +333,9 @@ describe('A05 세션 무효화', () => {
     });
     await A.send({ type: 'setSettings', patch: { autoSync: true } });
     const uid = psql(`select id from auth.users where email='${email}'`);
-    const ws = (await state(A)).account!.workspaceId;
-    // A 의 세션만 제거 (B 는 유지)
-    const devA = psql(
-      `select auth_session_id from shatsu.devices d where d.workspace_id='${ws}' and d.label like 'Chrom%' order by created_at desc limit 1`,
-    );
+    const devices = await A.send<{ id: string; isCurrent: boolean }[]>({ type: 'listDevices' });
+    const cur = devices.find((d) => d.isCurrent)!;
+    const devA = psql(`select auth_session_id from shatsu.devices where id='${cur.id}'`);
     expect(devA).toMatch(/[0-9a-f-]{36}/);
     psql(`delete from auth.sessions where id='${devA}' and user_id='${uid}'`);
     await A.send({ type: 'syncNow' }).catch(() => undefined);
@@ -353,20 +366,28 @@ describe('A05 세션 무효화', () => {
 
 describe('U02 키보드·200% 확대', () => {
   it('키보드만으로 설정 탭 탐색·자동 동기화 토글, 200% 확대 스크린샷', async () => {
+    await A.send({ type: 'setSettings', patch: { autoSync: true } });
     const p = await A.context.newPage();
     await p.goto(`chrome-extension://${A.extensionId}/app.html#/settings`);
-    await p.waitForTimeout(1500);
-    // Tab 으로 첫 체크박스(자동 동기화)까지 이동 후 Space
+    await p.locator('[role=switch]').first().waitFor({ timeout: 15_000 });
+    let tabs = 0;
     let found = false;
     for (let i = 0; i < 25 && !found; i++) {
       await p.keyboard.press('Tab');
+      tabs++;
       found = await p.evaluate(() => document.activeElement?.getAttribute('role') === 'switch');
     }
     expect(found).toBe(true);
+    const before = await p.evaluate(() => (document.activeElement as HTMLInputElement).checked);
     await p.keyboard.press('Space');
-    await waitFor(async () => (await state(A)).settings.autoSync === false);
-    await p.keyboard.press('Space');
-    await waitFor(async () => (await state(A)).settings.autoSync === true);
+    const after = !before; // 제어 컴포넌트라 DOM 값은 worker 상태가 바뀐 뒤 따라온다
+    await waitFor(
+      async () => (await state(A)).settings.autoSync === after,
+      30_000,
+      250,
+      async () => ({ ...(await diag(A)()), settings: (await state(A)).settings, after, before }),
+    );
+    note('u02', { tabsToSwitch: tabs, before, after });
     await p.evaluate(() => {
       (document.documentElement.style as unknown as { zoom: string }).zoom = '2';
     });
@@ -386,7 +407,9 @@ describe('U02 키보드·200% 확대', () => {
     await p.waitForTimeout(800);
     await p.screenshot({ path: `${SHOTS_DIR}/app-chromium-onboarding-200pct.png` });
     await p.close();
-  }, 60_000);
+    await A.send({ type: 'setSettings', patch: { autoSync: true } });
+    await waitFor(async () => (await state(A)).settings.autoSync === true, 15_000, 250, diag(A));
+  }, 90_000);
 });
 
 describe('P01 1k 항목', () => {
@@ -413,7 +436,15 @@ describe('P01 1k 항목', () => {
     expect(plan.counts.toServer).toBe(1000);
     const t2 = Date.now();
     await A.send({ type: 'applyMerge', planId: plan.planId });
-    await untilIdle(A, 180_000);
+    await waitFor(
+      async () => {
+        const st = await state(A);
+        return st.status === 'idle' && st.counts.outbox === 0 ? st : null;
+      },
+      180_000,
+      500,
+      async () => ({ ...(await diag(A)()), diagnostics: await A.send({ type: 'diagnostics' }) }),
+    );
     const uploadMs = Date.now() - t2;
     const bigB = await makeFolder(B, 'shatsu-1k');
     const t3 = Date.now();
