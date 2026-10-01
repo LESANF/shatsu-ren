@@ -64,7 +64,9 @@ export type Request =
       newCollectionTitle?: string;
     }
   | { type: 'previewNewLocalFolder'; collectionId: string; parentLocalId: string; title: string }
-  | { type: 'previewConnect'; copyFrom: string | null }
+  | { type: 'previewUpload'; localRootId: string; title: string }
+  | { type: 'previewDownload'; collectionId: string }
+  | { type: 'resetToServer'; collectionId: string }
   | { type: 'applyMerge'; planId: string }
   | { type: 'pauseBinding'; collectionId: string }
   | { type: 'resumeBinding'; collectionId: string }
@@ -109,11 +111,11 @@ export type Response<T extends Request['type']> = T extends 'getState'
   ? StateSnapshot
   : T extends 'getFolderTree'
     ? TreePickerNode[]
-    : T extends 'previewConnect'
+    : T extends 'previewUpload' | 'previewDownload'
       ? MergePlan & {
           collectionTitle: string;
           localTitle: string;
-          connectMode: 'start' | 'receive' | 'rejoin';
+          connectMode: 'upload' | 'receive' | 'rejoin';
         }
       : T extends 'previewMerge' | 'previewNewLocalFolder'
         ? MergePlan & { collectionTitle: string }
