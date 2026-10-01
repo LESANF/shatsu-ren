@@ -19,6 +19,7 @@ export function BindingRow({
   const d = dict();
   const { run, busy, err } = useRequest();
   const [confirm, setConfirm] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const [pendingChoice, setPendingChoice] = useState<'keep' | 'discard'>('keep');
   const tone = b.status === 'active' ? 'ok' : b.status === 'paused' ? 'warn' : 'danger';
   return (
@@ -77,6 +78,11 @@ export function BindingRow({
             {d.binding.reselect}
           </button>
         )}
+        {!compact && b.status === 'active' && (
+          <button type="button" className="btn" onClick={() => setResetOpen(true)}>
+            {d.binding.resetToServer}
+          </button>
+        )}
         {!compact && (
           <button type="button" className="btn danger" onClick={() => setConfirm(true)}>
             {d.binding.disconnect}
@@ -88,6 +94,27 @@ export function BindingRow({
           {err.code}
         </div>
       )}
+      <Dialog open={resetOpen} onClose={() => setResetOpen(false)} title={d.binding.resetToServer}>
+        <p>{fmt(d.binding.resetBody, { name: b.title, local: b.rootTitle ?? '' })}</p>
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <button type="button" className="btn" onClick={() => setResetOpen(false)}>
+            {d.common.cancel}
+          </button>
+          <button
+            type="button"
+            className="btn danger"
+            disabled={busy}
+            onClick={() =>
+              void run({ type: 'resetToServer', collectionId: b.collectionId }).then(() => {
+                setResetOpen(false);
+                void refresh();
+              })
+            }
+          >
+            {d.binding.resetConfirm}
+          </button>
+        </div>
+      </Dialog>
       <Dialog open={confirm} onClose={() => setConfirm(false)} title={d.binding.disconnect}>
         <p>{d.binding.disconnectBody}</p>
         <label className="row">
@@ -160,11 +187,9 @@ export function Folders({
       <section className="card stack">
         <div className="row between">
           <h2>{d.nav.folders}</h2>
-          {state.bindings.length === 0 && (
-            <a className="btn" href="#/onboarding">
-              {d.overview.addFolder}
-            </a>
-          )}
+          <a className="btn" href="#/onboarding">
+            {d.overview.addFolder}
+          </a>
         </div>
         {state.bindings.length === 0 ? (
           <p className="muted">{d.binding.none}</p>
