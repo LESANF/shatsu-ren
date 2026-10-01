@@ -125,6 +125,11 @@ export const en: Dict = {
     alreadyUploaded: 'Already connected',
     uploadName: 'Name on the server',
     uploadNameHint: 'Other browsers get a folder with this name when they download it.',
+    makeSyncFolder: 'Also create a synced folder at the front of the bookmarks bar here',
+    makeSyncFolderHint:
+      'The folder you picked is left as is and not connected. A copy appears at the front of the bookmarks bar, and that copy stays in sync.',
+    summaryUploadCopy:
+      'Uploads “{local}” as “{name}” and keeps it in sync through a new “{name}” folder at the front of the bookmarks bar. “{local}” is left as is.',
     titleTaken: 'That name is already on the server. Choose another.',
     titleEmpty: 'Enter a name.',
     summaryUpload: '“{local}” in this browser will be uploaded as “{name}” and kept in sync.',
