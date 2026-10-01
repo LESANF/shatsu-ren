@@ -121,6 +121,11 @@ export const ko = {
     alreadyUploaded: '이미 연결된 폴더',
     uploadName: '서버에 올릴 이름',
     uploadNameHint: '다른 브라우저에서 받을 때 이 이름의 폴더가 생겨요.',
+    makeSyncFolder: '이 브라우저에도 북마크바 맨 앞에 동기화 폴더 만들기',
+    makeSyncFolderHint:
+      '고른 폴더는 그대로 두고 연결하지 않아요. 내용을 복사한 새 폴더가 북마크바 맨 앞에 생기고, 그 폴더가 다른 브라우저와 맞춰져요.',
+    summaryUploadCopy:
+      '「{local}」의 내용을 「{name}」 이름으로 서버에 올리고, 북마크바 맨 앞의 새 「{name}」 폴더로 계속 맞춰요. 「{local}」은 그대로예요.',
     titleTaken: '서버에 같은 이름이 있어요. 다른 이름을 쓰세요.',
     titleEmpty: '이름을 입력하세요.',
     summaryUpload:
