@@ -26,7 +26,7 @@ export const SYNC_ALARM = 'shatsu-sync';
 type StoredPlan = MergePlan & {
   collectionTitle: string;
   createCollection?: { title: string };
-  newLocalFolder?: { parentLocalId: string; title: string; index?: number };
+  newLocalFolder?: { parentLocalId: string; title: string; index?: number; copyFrom?: string };
 };
 
 export class Service {
@@ -153,7 +153,7 @@ export class Service {
       case 'previewNewLocalFolder':
         return this.previewNewLocalFolder(req.collectionId, req.parentLocalId, req.title);
       case 'previewUpload':
-        return this.previewUpload(req.localRootId, req.title);
+        return this.previewUpload(req.localRootId, req.title, req.makeSyncFolder === true);
       case 'previewDownload':
         return this.previewDownload(req.collectionId);
       case 'resetToServer':
@@ -566,7 +566,11 @@ export class Service {
     });
   }
   /** 올리기: 고른 폴더를 이름을 붙여 새 서버 북마크로 올리고, 그 폴더를 그대로 연결한다. */
-  private async previewUpload(localRootId: string, title: string) {
+  /**
+   * 올리기. 기본은 고른 폴더를 그 자리에서 연결한다.
+   * makeSyncFolder 면 고른 폴더는 건드리지 않고, 그 내용을 복사한 새 폴더를 북마크바 맨 앞에 만들어 연결한다.
+   */
+  private async previewUpload(localRootId: string, title: string, makeSyncFolder: boolean) {
     const name = title.trim();
     if (!name) throw Object.assign(new Error('empty title'), { code: 'EMPTY_TITLE' });
     return this.withCtx(async (ctx) => {
@@ -575,9 +579,76 @@ export class Service {
         (c) => c.title.trim().toLowerCase() === name.toLowerCase(),
       );
       if (taken) throw Object.assign(new Error('duplicate title'), { code: 'DUPLICATE_TITLE' });
-      const p = await this.previewMerge(localRootId, undefined, name);
       const local = await api.get(localRootId);
-      return { ...p, localTitle: local?.title ?? '', connectMode: 'upload' as const };
+      if (!local || local.url)
+        throw Object.assign(new Error('folder not found'), { code: 'ROOT_MISSING' });
+      if (!makeSyncFolder) {
+        const p = await this.previewMerge(localRootId, undefined, name);
+        return { ...p, localTitle: local.title, connectMode: 'upload' as const };
+      }
+      const bar = await bookmarksBar();
+      if (!bar) throw Object.assign(new Error('no bookmarks bar'), { code: 'ROOT_MISSING' });
+      let toServer = 0;
+      let folders = 0;
+      let excluded = 0;
+      const items: MergePlan['items'] = [];
+      const walk = (n: chrome.bookmarks.BookmarkTreeNode, path: string[]) => {
+        for (const c of n.children ?? []) {
+          if (c.url && !isSyncableUrl(c.url)) excluded++;
+          else {
+            toServer++;
+            if (!c.url) folders++;
+            items.push({
+              direction: 'toServer',
+              title: c.title,
+              kind: c.url ? 'bookmark' : 'folder',
+              path,
+            });
+          }
+          if (!c.url) walk(c, [...path, c.title]);
+        }
+      };
+      const src = (await chrome.bookmarks.getSubTree(localRootId))[0];
+      if (src) walk(src, []);
+      let folderName = name;
+      const siblings = await api.getChildren(bar.id);
+      for (let i = 2; siblings.some((x) => !x.url && x.title === folderName); i++)
+        folderName = `${name} (${i})`;
+      const plan: StoredPlan = {
+        planId: crypto.randomUUID(),
+        collectionId: crypto.randomUUID(),
+        rootGlobalId: crypto.randomUUID(),
+        localRootId: '',
+        headSeq: (await getMeta<number>(ctx.db, 'headSeq')) ?? 0,
+        localFingerprint: '',
+        counts: {
+          toLocal: 0,
+          toServer,
+          matched: 0,
+          duplicateCandidates: 0,
+          excluded,
+          deletes: 0,
+          folders: { toLocal: 0, toServer: folders },
+          reorderedFolders: 0,
+        },
+        items,
+        matches: [],
+        createdAt: Date.now(),
+        collectionTitle: name,
+        createCollection: { title: name },
+        newLocalFolder: {
+          parentLocalId: bar.id,
+          title: folderName,
+          index: 0,
+          copyFrom: localRootId,
+        },
+      };
+      await setMeta(ctx.db, `mergePlan:${plan.planId}`, plan);
+      return {
+        ...plan,
+        localTitle: `${bar.title} › ${folderName}`,
+        connectMode: 'upload' as const,
+      };
     });
   }
 
@@ -704,11 +775,16 @@ export class Service {
           expected: { title: plan.newLocalFolder.title, kind: 'folder' },
         });
         this.checkEpoch(epoch);
+        // 복사 원본은 새 폴더를 만들기 전에 읽는다 (원본이 북마크바여도 새 폴더가 섞이지 않게)
+        const source = plan.newLocalFolder.copyFrom
+          ? ((await chrome.bookmarks.getSubTree(plan.newLocalFolder.copyFrom))[0] ?? null)
+          : null;
         const created = await api.create({
           parentId: plan.newLocalFolder.parentLocalId,
           title: plan.newLocalFolder.title,
           ...(plan.newLocalFolder.index !== undefined ? { index: plan.newLocalFolder.index } : {}),
         });
+        if (source) await copyChildren(source, created.id);
         plan.localRootId = created.id;
         const tree = await getSubTree(created.id);
         plan.localFingerprint = await (await import('./sync/plan')).localFingerprint(tree!);
@@ -1636,4 +1712,15 @@ async function bookmarksBar(): Promise<chrome.bookmarks.BookmarkTreeNode | null>
     tops[0] ??
     null
   );
+}
+
+/** 원본 폴더의 자식들을 순서대로 대상 폴더에 복사한다. 원본은 건드리지 않는다. */
+async function copyChildren(src: chrome.bookmarks.BookmarkTreeNode, destId: string): Promise<void> {
+  for (const c of src.children ?? []) {
+    if (c.url) await chrome.bookmarks.create({ parentId: destId, title: c.title, url: c.url });
+    else {
+      const f = await chrome.bookmarks.create({ parentId: destId, title: c.title });
+      await copyChildren(c, f.id);
+    }
+  }
 }
