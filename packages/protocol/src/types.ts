@@ -150,13 +150,15 @@ export interface CommitPayload {
   collections?: CollectionRecord[];
   deletionId?: string;
   restoredDeletionId?: string;
+  /** deleteCollection commit: 이 서버 북마크가 통째로 지워졌다 */
+  deletedCollectionId?: string;
 }
 
 export interface Commit {
   seq: number;
   sourceDeviceId: string;
   opId: string;
-  kind: OperationKind;
+  kind: OperationKind | 'deleteCollection';
   payload: CommitPayload;
   serverTime: string;
 }

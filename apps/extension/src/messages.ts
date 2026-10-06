@@ -70,6 +70,8 @@ export type Request =
   | { type: 'applyMerge'; planId: string }
   | { type: 'pauseBinding'; collectionId: string }
   | { type: 'resumeBinding'; collectionId: string }
+  | { type: 'renameSet'; collectionId: string; title: string }
+  | { type: 'deleteSet'; collectionId: string }
   | { type: 'disconnectBinding'; collectionId: string; pendingChoice?: 'keep' | 'discard' }
   | { type: 'listConflicts' }
   | {
