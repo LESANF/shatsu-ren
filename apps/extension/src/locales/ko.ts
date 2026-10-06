@@ -115,6 +115,11 @@ export const ko = {
     tabUploadHint: '폴더 하나를 이름을 붙여 서버에 올려요.',
     noSets: '서버에 올린 북마크가 아직 없어요. "이 브라우저의 폴더 올리기"로 시작하세요.',
     alreadyHere: '이 브라우저에 연결됨',
+    renameSet: '이름 바꾸기',
+    renamePrompt: '새 이름',
+    deleteSet: '삭제',
+    deleteSetConfirm:
+      '서버에서 "{title}"을(를) 지울까요? 모든 브라우저에서 연결이 끊기고, 각 브라우저의 폴더와 북마크는 그대로 남습니다. 서버 쪽은 되돌릴 수 없습니다.',
     download: '받기',
     uploadBody:
       '올릴 폴더를 고르세요. 올린 뒤에도 이 폴더는 그대로이고, 여기서 고친 내용이 서버와 다른 브라우저에 계속 반영돼요.',
