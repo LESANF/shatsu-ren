@@ -119,6 +119,11 @@ export const en: Dict = {
     tabUploadHint: 'Upload one folder to the server under a name.',
     noSets: 'Nothing uploaded yet. Start with “Upload a folder from this browser”.',
     alreadyHere: 'Connected here',
+    renameSet: 'Rename',
+    renamePrompt: 'New name',
+    deleteSet: 'Delete',
+    deleteSetConfirm:
+      'Delete "{title}" from the server? Every browser disconnects from it; the folders and bookmarks in each browser stay. This cannot be undone on the server.',
     download: 'Download',
     uploadBody:
       'Choose the folder to upload. It stays where it is, and edits here keep syncing to the server and your other browsers.',

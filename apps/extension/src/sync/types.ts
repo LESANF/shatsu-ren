@@ -29,6 +29,8 @@ export interface ObservedNode {
   childOrder?: string[];
   orderRevision?: number;
   excluded?: 'unsupported_url' | 'unreadable';
+  /** 충돌에서 '내 삭제 유지'를 고른 폴더: 안쪽 원격 변경이 있어도 삭제를 보낸다 */
+  forceDelete?: true;
 }
 
 export type OutboxStatus = 'pending' | 'in_flight' | 'held' | 'done' | 'failed';

@@ -410,3 +410,6 @@ button.choice {
   font: inherit;
   color: inherit;
 }
+.set .choice-body {
+  flex: 1;
+}

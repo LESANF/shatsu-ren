@@ -333,6 +333,29 @@ describe('reconcile', () => {
     expect(out.conflicts[0]?.kind).toBe('local_delete_remote_edit');
   });
 
+  it('폴더 삭제 vs 안쪽 항목 원격 수정(못 본 것) → 폴더 충돌, 삭제 op 없음. 내 삭제 유지면 보낸다', () => {
+    const F = gid();
+    const C = gid();
+    const observed = new Map([
+      ['r', rootObs],
+      ['f', obs('f', F, { kind: 'folder', url: null })],
+      ['c', obs('c', C, { parentLocalId: 'f' })],
+    ]);
+    const shadowNodes = new Map([
+      [ROOT_G, snode({ id: ROOT_G, kind: 'root', parentId: null })],
+      [F, snode({ id: F, kind: 'folder', url: null })],
+      [C, snode({ id: C, kind: 'bookmark', parentId: F, revision: 2, title: 'edited' })],
+    ]);
+    const out = reconcile(input({ local: tree([]), observed, shadowNodes }));
+    expect(out.ops).toEqual([]);
+    expect(out.conflicts.map((c) => [c.kind, c.globalId])).toEqual([
+      ['local_delete_remote_edit', F],
+    ]);
+    observed.set('f', { ...observed.get('f')!, forceDelete: true });
+    const again = reconcile(input({ local: tree([]), observed, shadowNodes }));
+    expect(again.ops.map((o) => o.kind)).toEqual(['deleteSubtree']);
+  });
+
   it('삭제는 확인 없이 따라간다: 보내는 쪽 20개, 받는 쪽 20개 모두 검토 없이 반영', () => {
     const ids = Array.from({ length: 20 }, () => gid());
     const live = new Map<string, NodeRecord>([
@@ -639,5 +662,31 @@ describe('reconcile', () => {
     );
     expect(out.ops).toEqual([]);
     expect(out.reviews[0]?.kind).toBe('excluded_url');
+  });
+
+  it('한도 초과(4KB 넘는 제목)는 보내지 않고 보류, 나머지는 그대로 올라간다', () => {
+    const local = tree([
+      {
+        id: 'big',
+        parent: null,
+        kind: 'bookmark',
+        title: 'x'.repeat(5000),
+        url: 'https://e.com/1',
+      },
+      { id: 'ok', parent: null, kind: 'bookmark', title: 'ok', url: 'https://e.com/2' },
+    ]);
+    const out = reconcile(input({ local }));
+    expect(out.ops.map((o) => o.kind === 'create' && o.localId)).toEqual(['ok']);
+    expect(out.stats.held).toBe(1);
+  });
+
+  it('다른 동기화 폴더에서 옮겨 온 항목은 그쪽 삭제가 끝날 때까지 보류 (중복 방지)', () => {
+    const local = tree([
+      { id: 'moved', parent: null, kind: 'bookmark', title: 'M', url: 'https://e.com/m' },
+    ]);
+    const out = reconcile(input({ local, foreignObserved: new Set(['moved']) }));
+    expect(out.ops).toEqual([]);
+    expect(out.observedUpserts.some((o) => o.localId === 'moved')).toBe(false);
+    expect(out.stats.held).toBe(1);
   });
 });
