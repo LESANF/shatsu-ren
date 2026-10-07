@@ -53,7 +53,7 @@ export function Onboarding({
       </ol>
       {step === 0 && <LoginStep state={state} refresh={refresh} />}
       {step === 1 && (
-        <PickStep
+        <ConnectStep
           state={state}
           onPlan={(p) => {
             setPlan(p);
@@ -163,21 +163,7 @@ function LoginStep({ state, refresh }: { state: StateSnapshot; refresh: () => Pr
   );
 }
 
-function shortBrowser(deviceLabel: string): string {
-  const brands =
-    (navigator as { userAgentData?: { brands: { brand: string }[] } }).userAgentData?.brands ?? [];
-  const known: Record<string, string> = {
-    'Google Chrome': 'Chrome',
-    'Microsoft Edge': 'Edge',
-    Brave: 'Brave',
-    Opera: 'Opera',
-    Vivaldi: 'Vivaldi',
-  };
-  for (const b of brands) if (known[b.brand]) return known[b.brand]!;
-  return deviceLabel.split(' · ')[0]?.trim() || '';
-}
-
-function PickStep({
+function ConnectStep({
   state,
   onPlan,
 }: {
@@ -188,213 +174,87 @@ function PickStep({
   const o = d.onboarding;
   const { run, busy, err } = useRequest();
   const [tree, setTree] = useState<TreePickerNode[] | null>(null);
-  const unbound = [...state.collections.filter((c) => !c.bound)].sort((a, b) => {
-    const filled = Number((b.itemCount ?? 0) > 0) - Number((a.itemCount ?? 0) > 0);
-    if (filled) return filled; // 내용이 있는 것 먼저
-    const mine = Number(a.createdHere) - Number(b.createdHere);
-    if (mine) return mine; // 다른 브라우저가 만든 것 먼저
-    return (b.createdAt ?? '').localeCompare(a.createdAt ?? ''); // 최근 것 먼저
-  });
-  const defaultTarget =
-    unbound.find((c) => (c.itemCount ?? 0) > 0 && !c.createdHere)?.id ?? unbound[0]?.id ?? 'new';
-  const [target, setTarget] = useState<string>(defaultTarget);
-  const [how, setHow] = useState<'bind' | 'receive'>('bind');
+  const [copy, setCopy] = useState(true);
   const [node, setNode] = useState<TreePickerNode | null>(null);
-  const [sharedTitle, setSharedTitle] = useState('');
-  const [newName, setNewName] = useState('');
+  const shared = state.collections.length > 0;
+  const items = state.collections.reduce((n, c) => Math.max(n, c.itemCount ?? 0), 0);
   useEffect(() => {
-    void send({ type: 'getFolderTree' }).then(setTree);
+    void send({ type: 'getFolderTree' }).then((t) => {
+      setTree(t);
+      if (t[0]) setNode(t[0]); // 기본: 북마크바
+    });
   }, []);
-  const boundRoots = new Set(state.bindings.map((b) => b.localRootId));
-  const reason = (n: TreePickerNode) => (boundRoots.has(n.id) ? o.nested : undefined);
-  const col = target === 'new' ? null : (state.collections.find((c) => c.id === target) ?? null);
-  const browser = shortBrowser(state.settings.deviceLabel);
-  const select = (n: TreePickerNode) => {
-    setNode(n);
-    if (!col) setSharedTitle(browser ? `${browser} ${n.title}` : n.title);
-    else setNewName(col.title);
-  };
-  const pickTarget = (id: string) => {
-    setTarget(id);
-    setNode(null);
-  };
-  const meta = (c: StateSnapshot['collections'][number]) => {
-    const parts: string[] = [];
-    if (c.createdHere) parts.push(o.metaCreatedHere);
-    else if (c.createdBy) parts.push(fmt(o.metaCreatedBy, { who: c.createdBy }));
-    if (c.createdAt)
-      parts.push(
-        new Date(c.createdAt).toLocaleString(locale() === 'ko' ? 'ko-KR' : 'en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit',
-        }),
-      );
-    parts.push(c.itemCount ? fmt(o.metaItems, { n: c.itemCount }) : o.metaEmpty);
-    return parts.join(' · ');
-  };
-  const summary = !node
-    ? o.pickFolderFirst
-    : !col
-      ? fmt(o.summaryNew, { local: node.title, shared: sharedTitle || node.title })
-      : how === 'bind'
-        ? fmt(o.summaryBind, { shared: col.title, local: node.title })
-        : fmt(o.summaryReceive, {
-            shared: col.title,
-            local: node.title,
-            name: newName || col.title,
-          });
   const next = async () => {
-    if (!node) return;
-    const req = !col
-      ? {
-          type: 'previewMerge' as const,
-          localRootId: node.id,
-          newCollectionTitle: sharedTitle || node.title,
-        }
-      : how === 'bind'
-        ? { type: 'previewMerge' as const, localRootId: node.id, collectionId: col.id }
-        : {
-            type: 'previewNewLocalFolder' as const,
-            collectionId: col.id,
-            parentLocalId: node.id,
-            title: newName || col.title,
-          };
-    const p = await run(req);
-    if (p)
-      onPlan({
-        ...p,
-        localTitle:
-          col && how === 'receive' ? `${node.title} / ${newName || col.title}` : node.title,
-      });
+    const p = await run({
+      type: 'previewConnect',
+      copyFrom: !shared && copy ? (node?.id ?? null) : null,
+    });
+    if (p) onPlan(p);
   };
   return (
     <div className="card stack">
-      {unbound.length > 0 && (
-        <section className="stack" aria-labelledby="pick-shared">
-          <h2 id="pick-shared">{o.step1Title}</h2>
-          <p className="small muted">{o.step1Body}</p>
-          <div className="choices" role="radiogroup" aria-labelledby="pick-shared">
-            {unbound.map((c) => (
-              <label key={c.id} className="choice" data-on={target === c.id || undefined}>
-                <input
-                  type="radio"
-                  name="shared"
-                  id={`shared-${c.id}`}
-                  checked={target === c.id}
-                  onChange={() => pickTarget(c.id)}
-                />
-                <span className="choice-body">
-                  <strong>{c.title || o.untitled}</strong>
-                  <span className="small muted">{meta(c)}</span>
-                </span>
-              </label>
+      {shared ? (
+        <>
+          <h2>{o.joinTitle}</h2>
+          <p>{fmt(o.joinBody, { n: items })}</p>
+        </>
+      ) : (
+        <>
+          <h2>{o.startTitle}</h2>
+          <p>{o.startBody}</p>
+          <div className="choices row-choices" role="radiogroup" aria-label={o.startTitle}>
+            <label className="choice" data-on={copy || undefined}>
+              <input
+                type="radio"
+                name="seed"
+                id="seed-copy"
+                checked={copy}
+                onChange={() => setCopy(true)}
+              />
+              <span className="choice-body">
+                <strong>{o.seedCopy}</strong>
+                <span className="small muted">{o.seedCopyHint}</span>
+              </span>
+            </label>
+            <label className="choice" data-on={!copy || undefined}>
+              <input
+                type="radio"
+                name="seed"
+                id="seed-empty"
+                checked={!copy}
+                onChange={() => setCopy(false)}
+              />
+              <span className="choice-body">
+                <strong>{o.seedEmpty}</strong>
+                <span className="small muted">{o.seedEmptyHint}</span>
+              </span>
+            </label>
+          </div>
+          {copy &&
+            (tree ? (
+              <FolderTree nodes={tree} selected={node?.id ?? null} onSelect={setNode} />
+            ) : (
+              <Spinner />
             ))}
-            <label className="choice" data-on={target === 'new' || undefined}>
-              <input
-                type="radio"
-                name="shared"
-                id="shared-new"
-                checked={target === 'new'}
-                onChange={() => pickTarget('new')}
-              />
-              <span className="choice-body">
-                <strong>{o.newSharedOption}</strong>
-                <span className="small muted">{o.newSharedOptionHint}</span>
-              </span>
-            </label>
-          </div>
-        </section>
+        </>
       )}
-      <section className="stack" aria-labelledby="pick-local">
-        <h2 id="pick-local">
-          {unbound.length === 0 ? o.pickTitle : col ? o.step2BindTitle : o.step2NewTitle}
-        </h2>
-        {col ? (
-          <div className="choices row-choices" role="radiogroup" aria-label={o.step2BindTitle}>
-            <label className="choice" data-on={how === 'bind' || undefined}>
-              <input
-                type="radio"
-                name="how"
-                id="how-bind"
-                checked={how === 'bind'}
-                onChange={() => setHow('bind')}
-              />
-              <span className="choice-body">
-                <strong>{o.howBind}</strong>
-                <span className="small muted">{o.howBindHint}</span>
-              </span>
-            </label>
-            <label className="choice" data-on={how === 'receive' || undefined}>
-              <input
-                type="radio"
-                name="how"
-                id="how-receive"
-                checked={how === 'receive'}
-                onChange={() => setHow('receive')}
-              />
-              <span className="choice-body">
-                <strong>{o.howReceive}</strong>
-                <span className="small muted">{o.howReceiveHint}</span>
-              </span>
-            </label>
-          </div>
-        ) : (
-          <p className="small muted">{o.pickBody}</p>
-        )}
-        {tree ? (
-          <FolderTree
-            nodes={tree}
-            selected={node?.id ?? null}
-            onSelect={select}
-            disabledIds={boundRoots}
-            disabledReason={reason}
-          />
-        ) : (
-          <Spinner />
-        )}
-        {!col && node && (
-          <label className="field">
-            {o.sharedName}
-            <input
-              id="shared-title"
-              className="input"
-              value={sharedTitle}
-              onChange={(e) => setSharedTitle(e.target.value)}
-            />
-            <span className="small muted">{o.sharedNameHint}</span>
-          </label>
-        )}
-        {col && how === 'receive' && node && (
-          <label className="field">
-            {o.newFolderName}
-            <input
-              id="new-folder-name"
-              className="input"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-            />
-          </label>
-        )}
-      </section>
       {err && (
         <div className="alert danger" role="alert">
-          {err.code === 'NESTED_BINDING'
-            ? o.nested
-            : err.code === 'MANAGED'
-              ? o.managed
-              : `${err.code}: ${err.message}`}
+          {err.code === 'ALREADY_BOUND' ? o.alreadyConnected : `${err.code}: ${err.message}`}
         </div>
       )}
-      <div className="summary" aria-live="polite" data-ready={node ? true : undefined}>
-        {summary}
+      <div className="summary" data-ready aria-live="polite">
+        {shared
+          ? o.summaryJoin
+          : copy && node
+            ? fmt(o.summaryStartCopy, { local: node.title })
+            : o.summaryStartEmpty}
       </div>
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button
           type="button"
           className="btn primary lg"
-          disabled={!node || busy || boundRoots.has(node.id)}
+          disabled={busy || (!shared && copy && !node)}
           onClick={() => void next()}
         >
           {o.nextToPreview}
