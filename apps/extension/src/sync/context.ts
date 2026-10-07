@@ -18,6 +18,10 @@ export interface Account {
 
 export interface Settings {
   autoSync: boolean;
+  /** 실시간(WebSocket) 연결 사용 여부. 끄면 주기 확인 + 수동 갱신만 */
+  realtime: boolean;
+  /** 주기 확인 간격(분): 5 / 30 / 240 */
+  pollMinutes: 5 | 30 | 240;
   locale: 'auto' | 'ko' | 'en';
   theme: 'auto' | 'light' | 'dark';
   deviceLabel: string;
@@ -25,6 +29,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   autoSync: true,
+  realtime: true,
+  pollMinutes: 5,
   locale: 'auto',
   theme: 'auto',
   deviceLabel: '',
@@ -136,7 +142,7 @@ export async function prepareContext(opts: { forceRegister?: boolean } = {}): Pr
 }
 
 export function defaultDeviceLabel(): string {
-  const b = browserName().split(' ')[0] ?? 'Browser';
+  const b = browserName().replace(/\s[\d.]+$/, '') || 'Browser'; // "Google Chrome 153" → "Google Chrome"
   const os = /Mac/.test(navigator.userAgent)
     ? 'macOS'
     : /Windows/.test(navigator.userAgent)
