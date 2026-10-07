@@ -205,6 +205,95 @@ describe('upload / download', () => {
     }
   }, 240000);
 
+  it('move between two synced folders does not duplicate; rename and delete server sets', async () => {
+    const e3 = `synthetic-sets-${Date.now()}@example.com`;
+    const C = await launch('chromium');
+    const D = await launch('aside');
+    try {
+      await C.send({ type: 'loginDev', email: e3, password });
+      const s1 = await C.bookmarks<BmNode>('create', {
+        parentId: (await bar(C)).id,
+        title: '세트1',
+      });
+      const s2 = await C.bookmarks<BmNode>('create', {
+        parentId: (await bar(C)).id,
+        title: '세트2',
+      });
+      const m = await C.bookmarks<BmNode>('create', {
+        parentId: s1.id,
+        title: 'Mover',
+        url: 'https://example.com/mover',
+      });
+      await C.bookmarks('create', {
+        parentId: s2.id,
+        title: 'Stay',
+        url: 'https://example.com/stay',
+      });
+      for (const [id, title] of [
+        [s1.id, '세트1'],
+        [s2.id, '세트2'],
+      ] as const) {
+        const up = await C.send<Plan>({ type: 'previewUpload', localRootId: id, title });
+        await C.send({ type: 'applyMerge', planId: up.planId });
+        await idle(C);
+      }
+      await D.send({ type: 'loginDev', email: e3, password });
+      const sets = async () =>
+        (await D.send<{ collections: { id: string; title: string }[] }>({ type: 'getState' }))
+          .collections;
+      for (const c of await sets()) {
+        const dn = await D.send<Plan>({ type: 'previewDownload', collectionId: c.id });
+        await D.send({ type: 'applyMerge', planId: dn.planId });
+        await idle(D);
+      }
+      const dFolder = async (title: string) => (await barKids(D)).find((c) => c.title === title);
+      await waitFor(
+        async () =>
+          (await D.bookmarks<BmNode[]>('search', { url: 'https://example.com/mover' })).length ===
+          1,
+        30000,
+      );
+
+      // 세트1 → 세트2 로 옮기면 D 에서도 옮겨질 뿐 둘이 되지 않는다
+      await C.bookmarks('move', m.id, { parentId: s2.id });
+      await waitFor(async () => {
+        const hits = await D.bookmarks<BmNode[]>('search', { url: 'https://example.com/mover' });
+        return hits.length === 1 && hits[0]!.parentId === (await dFolder('세트2'))?.id;
+      }, 45000);
+      await idle(C);
+      await idle(D);
+      expect(
+        (await D.bookmarks<BmNode[]>('search', { url: 'https://example.com/mover' })).length,
+      ).toBe(1);
+      expect(
+        (await C.bookmarks<BmNode[]>('search', { url: 'https://example.com/mover' })).length,
+      ).toBe(1);
+
+      // 이름 바꾸기: 다른 브라우저 폴더 이름도 따라 바뀐다
+      const id1 = (await sets()).find((c) => c.title === '세트1')!.id;
+      await C.send({ type: 'renameSet', collectionId: id1, title: '세트1-새이름' });
+      expect((await C.bookmarks<BmNode[]>('get', s1.id))[0]!.title).toBe('세트1-새이름');
+      await waitFor(async () => !!(await dFolder('세트1-새이름')), 30000);
+      await expect(
+        C.send({ type: 'renameSet', collectionId: id1, title: '세트2' }),
+      ).rejects.toThrow(/DUPLICATE_TITLE/);
+
+      // 삭제: 모든 브라우저에서 연결만 끊기고 폴더는 남는다
+      const id2 = (await sets()).find((c) => c.title === '세트2')!.id;
+      await D.send({ type: 'deleteSet', collectionId: id2 });
+      await waitFor(async () => {
+        const st = await C.send<{ bindings: { collectionId: string }[] }>({ type: 'getState' });
+        return !st.bindings.some((b) => b.collectionId === id2);
+      }, 30000);
+      expect((await subtree(C, s2.id)).children!.length).toBe(2);
+      expect(await dFolder('세트2')).toBeTruthy();
+      expect((await sets()).map((c) => c.title)).toEqual(['세트1-새이름']);
+    } finally {
+      await C.close().catch(() => undefined);
+      await D.close().catch(() => undefined);
+    }
+  }, 300000);
+
   it('screens: upload and download tabs', async () => {
     const C = await launch('chromium');
     await C.send({ type: 'loginDev', email, password });

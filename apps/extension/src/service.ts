@@ -1,5 +1,5 @@
 /** worker 측 요청 처리. 모든 화면 상태는 여기(실제 엔진·DB) 에서 읽는다. */
-import type { CollectionRecord, DeviceRecord } from 'shatsu-ren-protocol';
+import type { CollectionRecord, Commit, DeviceRecord } from 'shatsu-ren-protocol';
 import { isSyncableUrl, LIMITS } from 'shatsu-ren-protocol';
 import { currentSession, dropClient, getClient, loginDev, loginWithGoogle } from './auth/session';
 import { DEV_AUTH, getBackend, setCustomBackend, VERSION, hostPattern } from './config';
@@ -23,6 +23,8 @@ import { representativeStatus } from './sync/status';
 import type { ConflictRecord, RecentChange, ReviewItem } from './sync/types';
 
 export const SYNC_ALARM = 'shatsu-sync';
+/** 실시간 소켓만 확인(서버 동기화 호출 없음). 끊겼으면 재구독 → 구독 직후 한 번 따라잡기 */
+const RT_ALARM = 'shatsu-rt';
 type StoredPlan = MergePlan & {
   collectionTitle: string;
   createCollection?: { title: string };
@@ -74,6 +76,8 @@ export class Service {
     if (!existing || existing.periodInMinutes !== settings.pollMinutes) {
       await chrome.alarms.create(SYNC_ALARM, { periodInMinutes: settings.pollMinutes });
     }
+    if (!(await chrome.alarms.get(RT_ALARM)))
+      await chrome.alarms.create(RT_ALARM, { periodInMinutes: 5 });
   }
 
   async ensureRealtime(): Promise<void> {
@@ -107,6 +111,7 @@ export class Service {
       void this.engine.requestSync('alarm').then(() => this.ensureRealtime());
     }
     if (name === RETRY_ALARM) void this.engine.requestSync('alarm');
+    if (name === RT_ALARM) void this.ensureRealtime();
   }
 
   // -------------------------------------------------------------- 요청
@@ -158,6 +163,10 @@ export class Service {
         return this.previewDownload(req.collectionId);
       case 'resetToServer':
         return this.resetToServer(req.collectionId);
+      case 'renameSet':
+        return this.renameSet(req.collectionId, req.title);
+      case 'deleteSet':
+        return this.deleteSet(req.collectionId);
       case 'applyMerge':
         return this.applyMerge(req.planId);
       case 'pauseBinding':
@@ -260,8 +269,8 @@ export class Service {
     const session = await currentSession(client);
     if (!session) return { ...base, status: 'auth_required' };
     const account = await getAccount(backend.url);
+    const res = await prepareContext();
     if (!account || account.userId !== session.user.id) {
-      const res = await prepareContext();
       if (!res.ok)
         return {
           ...base,
@@ -282,7 +291,6 @@ export class Service {
           },
         };
     }
-    const res = await prepareContext();
     if (!res.ok)
       return {
         ...base,
@@ -306,11 +314,11 @@ export class Service {
     const acc = res.ctx.account;
     const bindings = await db.getAll('bindings');
     const collections = await db.getAll('collections');
-    const conflicts = (await db.getAllFromIndex('conflicts', 'byStatus', 'open')).length;
-    const reviews = (await db.getAllFromIndex('reviews', 'byStatus', 'open')).length;
+    const conflicts = await db.countFromIndex('conflicts', 'byStatus', 'open');
+    const reviews = await db.countFromIndex('reviews', 'byStatus', 'open');
     const outbox =
-      (await db.getAllFromIndex('outbox', 'byStatus', 'pending')).length +
-      (await db.getAllFromIndex('outbox', 'byStatus', 'in_flight')).length;
+      (await db.countFromIndex('outbox', 'byStatus', 'pending')) +
+      (await db.countFromIndex('outbox', 'byStatus', 'in_flight'));
     const pendingApply = (await getMeta<number>(db, 'pendingApplyCount')) ?? 0;
     const blocked =
       (await getMeta<{ code: string; at: number }>(db, 'blocked')) ??
@@ -358,9 +366,11 @@ export class Service {
     for (const b of bindings) {
       const col = collections.find((c) => c.id === b.collectionId);
       const root = await api.get(b.localRootId);
-      const itemCount = (
-        await db.getAllFromIndex('observed', 'byCollection', b.collectionId)
-      ).filter((o) => o.globalId && o.kind !== 'root').length;
+      // ponytail: 개수만 센다(루트 1개 제외). 제외된 URL 행도 포함되는 근사치
+      const itemCount = Math.max(
+        0,
+        (await db.countFromIndex('observed', 'byCollection', b.collectionId)) - 1,
+      );
       bindingsView.push({
         ...b,
         title: col?.title ?? '',
@@ -845,30 +855,50 @@ export class Service {
       return next;
     });
   }
+  /** 서버 북마크 이름 변경. 연결된 폴더 이름도 같이 바뀐다(예전 이름 그대로일 때). */
+  private async renameSet(collectionId: string, title: string) {
+    return this.withCtx(async (ctx) => {
+      const name = title.trim();
+      const col = await ctx.db.get('collections', collectionId);
+      if (!col) throw Object.assign(new Error('not found'), { code: 'NOT_FOUND' });
+      if (!name) throw Object.assign(new Error('empty title'), { code: 'INVALID_OPERATION' });
+      const r = await rpc.applyOne(ctx.client, {
+        protocolVersion: 1,
+        generationId: ctx.account.generationId,
+        op: {
+          kind: 'patchCollection',
+          opId: crypto.randomUUID(),
+          collectionId,
+          baseRevision: col.revision,
+          title: name,
+        },
+      });
+      if (r.receipt.status !== 'applied' && r.receipt.status !== 'noop')
+        throw Object.assign(new Error(r.receipt.code), { code: r.receipt.code ?? 'REJECTED' });
+      await this.engine.pull(ctx);
+      return { ok: true };
+    });
+  }
+
+  /** 서버 북마크 삭제. 모든 브라우저에서 연결이 끊기고 로컬 폴더는 남는다. */
+  private async deleteSet(collectionId: string) {
+    this.engine.bumpEpoch();
+    return this.withCtx(async (ctx) => {
+      await rpc.deleteCollection(ctx.client, collectionId);
+      await this.engine.pull(ctx);
+      await this.ensureRealtime();
+      return { ok: true };
+    });
+  }
+
   private async disconnectBinding(collectionId: string, pendingChoice: 'keep' | 'discard') {
     this.engine.bumpEpoch();
     return this.withCtx(async (ctx) => {
       const b = await ctx.db.get('bindings', collectionId);
       if (!b) return { ok: true };
-      await this.engine.backup(ctx.db, b, 'disconnect');
-      const tx = ctx.db.transaction(
-        ['bindings', 'observed', 'outbox', 'conflicts', 'reviews'],
-        'readwrite',
-      );
-      await tx.objectStore('bindings').delete(collectionId);
-      for (const o of await tx.objectStore('observed').index('byCollection').getAll(collectionId))
-        await tx.objectStore('observed').delete(o.localId);
-      for (const o of await tx.objectStore('outbox').getAll())
-        if (
-          o.collectionId === collectionId &&
-          (pendingChoice === 'discard' || o.status === 'done' || o.status === 'failed')
-        )
-          await tx.objectStore('outbox').delete(o.opId);
-      for (const c of await tx.objectStore('conflicts').getAll())
-        if (c.collectionId === collectionId) await tx.objectStore('conflicts').delete(c.id);
-      for (const r of await tx.objectStore('reviews').getAll())
-        if (r.collectionId === collectionId) await tx.objectStore('reviews').delete(r.id);
-      await tx.done;
+      // 브라우저에서 폴더를 이미 지웠으면 백업할 것이 없다
+      await this.engine.backup(ctx.db, b, 'disconnect').catch(() => undefined);
+      await this.engine.dropBinding(ctx.db, collectionId, pendingChoice);
       await this.ensureRealtime();
       return { ok: true };
     });
@@ -1112,7 +1142,7 @@ export class Service {
       } else if (c.kind === 'local_delete_remote_edit') {
         if (!obs) throw Object.assign(new Error('state'), { code: 'RECHECK' });
         if (resolution === 'mine') {
-          await db.put('observed', { ...obs, revision: c.remote.revision }); // 삭제 op 이 새 digest 로 제출됨
+          await db.put('observed', { ...obs, revision: c.remote.revision, forceDelete: true }); // 삭제 op 이 새 digest 로 제출됨
         } else {
           const ids = [obs.localId];
           const all = await db.getAllFromIndex('observed', 'byCollection', c.collectionId);
@@ -1353,13 +1383,21 @@ export class Service {
     if (!res.ok) return { items: [], hasMore: false };
     const { db, account } = res.ctx;
     const range = beforeSeq ? IDBKeyRange.upperBound(beforeSeq, true) : undefined;
-    const rows = (await db.getAll('inbox', range)).sort((a, b) => b.seq - a.seq);
+    // 최신부터 limit+1 개만 커서로 읽는다 (전체 inbox 를 매번 읽지 않음)
+    const rows: { seq: number; commit: Commit }[] = [];
+    for (
+      let cur = await db.transaction('inbox').store.openCursor(range, 'prev');
+      cur && rows.length <= limit;
+      cur = await cur.continue()
+    )
+      rows.push(cur.value);
     const page = rows.slice(0, limit);
     if (!this.devices.length) this.devices = (await getMeta<DeviceRecord[]>(db, 'devices')) ?? [];
     if (
-      !page.some((r) => this.devices.some((d) => d.id === r.commit.sourceDeviceId)) &&
-      page.length
+      page.some((r) => !this.devices.some((d) => d.id === r.commit.sourceDeviceId)) &&
+      Date.now() - this.devicesFetchedAt > 60_000
     ) {
+      this.devicesFetchedAt = Date.now();
       try {
         this.devices = await rpc.devices(res.ctx.client);
         await setMeta(db, 'devices', this.devices);

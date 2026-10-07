@@ -3,7 +3,7 @@
  * 브라우저 API 나 DB 를 직접 만지지 않는다. 결과를 엔진이 journal/outbox 로 실행한다.
  */
 import type { FolderOrder, NodeRecord } from 'shatsu-ren-protocol';
-import { isSyncableUrl } from 'shatsu-ren-protocol';
+import { fitsLimits, isSyncableUrl } from 'shatsu-ren-protocol';
 import type { LocalTree } from './browser';
 import type {
   Binding,
@@ -25,6 +25,8 @@ export interface ReconcileInput {
   openConflicts: Set<string>; // globalId
   /** 로컬에서 사라졌지만 브라우저 다른 곳에 존재하는 localId (범위 밖 이동) */
   existsElsewhere: Set<string>;
+  /** 다른 동기화 폴더에서 옮겨 와 아직 그쪽 기록이 남은 localId. 그쪽이 삭제를 보낼 때까지 보류 */
+  foreignObserved?: Set<string>;
   approvedOutboundDeletes: Set<string>; // 사용자가 승인한 대량 삭제 globalId
   approvedInboundDeletes: Set<string>;
   openReviewKinds: Set<string>; // 이미 열린 review kind (중복 생성 방지)
@@ -280,6 +282,8 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     const l = local.nodes.get(localId)!;
     let b = observed.get(localId);
     const syncable = l.kind === 'folder' || isSyncableUrl(l.url);
+    // 한도 초과(아주 긴 제목·URL)는 서버가 거부하므로 보내지 않고 보류한다
+    const fits = fitsLimits(l.title, l.url);
     const parentLocalId = l.parentId ?? rootLocal;
 
     if (
@@ -307,7 +311,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
         continue;
       }
       // 로컬 새 항목 → 서버 create (부모가 확정/발급된 경우만). 충돌 중인 폴더 아래는 보류.
-      if (hasOpenConflictAbove(localId)) {
+      if (!fits || inp.foreignObserved?.has(localId) || hasOpenConflictAbove(localId)) {
         out.stats.held++;
         continue;
       }
@@ -355,6 +359,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     }
     if (!b.globalId) continue; // excluded 상태 유지 (위에서 처리)
     if (
+      !fits ||
       pendingOps.has(b.globalId) ||
       openConflicts.has(b.globalId) ||
       hasOpenConflictAbove(localId)
@@ -596,7 +601,19 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
       for (const id of observedSubtree(b.localId)) out.observedDeletes.push(id);
       continue;
     }
-    if (s.revision !== b.revision) {
+    // 폴더 안에서 아직 못 본 원격 변경(수정·추가)이 있으면 조용히 지우지 않고 충돌로 묻는다
+    const unseenInside = (id: string): boolean =>
+      (shadowChildren.get(id) ?? []).some((c) => {
+        const n = shadowNodes.get(c);
+        if (!n || n.deletedAt) return false;
+        const lid = g2l.get(c);
+        const ob = lid ? observed.get(lid) : undefined;
+        return !ob || ob.revision !== n.revision || unseenInside(c);
+      });
+    if (
+      s.revision !== b.revision ||
+      (b.kind === 'folder' && !b.forceDelete && unseenInside(b.globalId!))
+    ) {
       out.conflicts.push({
         globalId: b.globalId!,
         localId: null,

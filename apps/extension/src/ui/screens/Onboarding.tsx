@@ -255,6 +255,29 @@ function ConnectStep({
                   <strong>{c.title || o.untitled}</strong>
                   <span className="small muted">{meta(c)}</span>
                 </span>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy}
+                  onClick={() => {
+                    const t = window.prompt(o.renamePrompt, c.title);
+                    if (t && t.trim() && t.trim() !== c.title)
+                      void run({ type: 'renameSet', collectionId: c.id, title: t });
+                  }}
+                >
+                  {o.renameSet}
+                </button>
+                <button
+                  type="button"
+                  className="btn danger"
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm(fmt(o.deleteSetConfirm, { title: c.title })))
+                      void run({ type: 'deleteSet', collectionId: c.id });
+                  }}
+                >
+                  {o.deleteSet}
+                </button>
                 {c.bound ? (
                   <span className="badge ok">{o.alreadyHere}</span>
                 ) : (

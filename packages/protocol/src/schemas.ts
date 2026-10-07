@@ -114,6 +114,7 @@ export const CommitSchema = z.object({
     collections: z.array(CollectionRecordSchema).optional(),
     deletionId: uuid.optional(),
     restoredDeletionId: uuid.optional(),
+    deletedCollectionId: uuid.optional(),
   }),
   serverTime: z.string(),
 });
