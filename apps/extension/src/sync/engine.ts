@@ -227,7 +227,17 @@ export class Engine {
       };
     }
     if (!gen) await setMeta(db, 'generationId', account.generationId);
-    const blocked = await getMeta<{ code: string }>(db, 'blocked');
+    let blocked = await getMeta<{ code: string; version?: string }>(db, 'blocked');
+    // 예전 버전이 남긴 LIMIT 정지, 업데이트 전의 버전 불일치 정지는 풀어 준다
+    if (
+      blocked &&
+      (blocked.code === 'LIMIT_EXCEEDED' ||
+        (blocked.code === 'PROTOCOL_VERSION_MISMATCH' &&
+          blocked.version !== chrome.runtime.getManifest().version))
+    ) {
+      await setMeta(db, 'blocked', null);
+      blocked = undefined;
+    }
     if (blocked && blocked.code !== 'STORAGE_FAILED')
       return { outcome: 'blocked', code: blocked.code, sent: 0, applied: 0, held: 0 };
 
@@ -265,6 +275,18 @@ export class Engine {
     let opIndex = 0;
     const runBase = Date.now();
     let pendingApply = 0;
+    // 동기화 폴더 사이 이동 감지용: 연결된 로컬 루트 → collection
+    const rootToCollection = new Map(
+      bindings.filter((b) => b.status === 'active').map((b) => [b.localRootId, b.collectionId]),
+    );
+    const boundRootOf = async (localId: string): Promise<string | null> => {
+      let cur: string | undefined = localId;
+      for (let i = 0; cur && i < 64; i++) {
+        if (rootToCollection.has(cur)) return rootToCollection.get(cur)!;
+        cur = (await api.get(cur))?.parentId;
+      }
+      return null;
+    };
     for (const binding of bindings) {
       if (binding.status === 'root_missing') {
         // 루트가 다시 보이면(브라우저 기동 직후 일시적 실패 등) 자동 재개. 사용자가 다시 선택할 때까지 삭제 전파는 없다.
@@ -349,9 +371,17 @@ export class Engine {
           !local.nodes.has(o.localId) &&
           o.globalId &&
           !ignoreElsewhere.has(o.localId) &&
-          (await api.get(o.localId))
+          (await api.get(o.localId)) &&
+          // 다른 동기화 폴더로 옮긴 것은 여기서 삭제로 본다 (그쪽에서 새로 올라간다)
+          !(await boundRootOf(o.localId))
         )
           existsElsewhere.add(o.localId);
+      const foreignObserved = new Set<string>();
+      for (const id of local.nodes.keys()) {
+        if (observed.has(id) || id === binding.localRootId) continue;
+        const other = await db.get('observed', id);
+        if (other && other.collectionId !== binding.collectionId) foreignObserved.add(id);
+      }
 
       const out = reconcile({
         binding,
@@ -363,6 +393,7 @@ export class Engine {
         pendingOps,
         openConflicts,
         existsElsewhere,
+        foreignObserved,
         approvedOutboundDeletes: approvedOut,
         approvedInboundDeletes: approvedIn,
         openReviewKinds: new Set(openReviews.map((r) => r.kind)),
@@ -536,13 +567,29 @@ export class Engine {
       ['shadow_nodes', 'shadow_orders', 'collections', 'inbox'],
       'readwrite',
     );
+    const renamed: { id: string; from: string; to: string }[] = [];
+    const deleted: string[] = [];
     for (const c of commits) {
-      for (const col of c.payload.collections ?? []) await tx.objectStore('collections').put(col);
+      if (c.payload.deletedCollectionId) deleted.push(c.payload.deletedCollectionId);
+      for (const col of c.payload.collections ?? []) {
+        const prev = await tx.objectStore('collections').get(col.id);
+        if (prev && prev.title !== col.title)
+          renamed.push({ id: col.id, from: prev.title, to: col.title });
+        await tx.objectStore('collections').put(col);
+      }
       for (const n of c.payload.nodes) await tx.objectStore('shadow_nodes').put(n);
       for (const o of c.payload.orders) await tx.objectStore('shadow_orders').put(o);
       await tx.objectStore('inbox').put({ seq: c.seq, commit: c, receivedAt: Date.now() });
     }
     await tx.done;
+    for (const id of deleted) await this.dropCollection(db, id);
+    // 서버 북마크 이름이 바뀌면, 연결된 로컬 폴더도 예전 이름 그대로일 때만 따라 바꾼다
+    for (const r of renamed) {
+      const b = await db.get('bindings', r.id);
+      if (!b) continue;
+      const [root] = await chrome.bookmarks.get(b.localRootId).catch(() => []);
+      if (root && root.title === r.from) await api.update(b.localRootId, { title: r.to });
+    }
     // inbox 는 최근 500개만 보관 (변경 내역 UI 용)
     const keys = await db.getAllKeys('inbox');
     if (keys.length > 500) {
@@ -575,6 +622,9 @@ export class Engine {
     await tx.objectStore('meta').put({ key: 'headSeq', value: snap.headSeq });
     await tx.objectStore('meta').put({ key: 'snapshotAt', value: Date.now() });
     await tx.done;
+    const alive = new Set(snap.collections.map((c) => c.id));
+    for (const b of await db.getAll('bindings'))
+      if (!alive.has(b.collectionId)) await this.dropBinding(db, b.collectionId, 'discard');
     return snap;
   }
 
@@ -600,6 +650,14 @@ export class Engine {
     );
     let count = 0;
     let idx = 0;
+    let backedUp = false;
+    // 적용 도중 사용자가 같은 항목을 고쳤으면 덮어쓰지 않는다 (다음 실행에서 3-way 로 다시 판단)
+    const changedSince = async (localId: string, fields: ('title' | 'url' | 'parentId')[]) => {
+      const was = local.nodes.get(localId);
+      const now = await api.get(localId);
+      if (!was || !now) return true;
+      return fields.some((f) => (was[f] ?? null) !== (now[f] ?? null));
+    };
     for (const a of sorted) {
       if (epoch !== this.epoch) break;
       this.phase('apply', { done: idx++, total: sorted.length });
@@ -678,6 +736,10 @@ export class Engine {
           if (a.title !== undefined) changes.title = a.title;
           if (a.url !== undefined) changes.url = a.url;
           if (epoch !== this.epoch) break;
+          if (await changedSince(a.localId, ['title', 'url'])) {
+            await finish({ status: 'failed', error: 'changed locally' });
+            continue;
+          }
           const r = await api.update(a.localId, changes);
           const o = observed.get(a.localId);
           await finish(
@@ -696,6 +758,10 @@ export class Engine {
           if (!parentLocalId) continue;
           await journal({ globalId: a.globalId, localId: a.localId, parentLocalId });
           if (epoch !== this.epoch) break;
+          if (await changedSince(a.localId, ['parentId'])) {
+            await finish({ status: 'failed', error: 'changed locally' });
+            continue;
+          }
           await api.move(a.localId, { parentId: parentLocalId });
           const o = observed.get(a.localId);
           await finish({}, o ? { ...o, parentLocalId, revision: a.revision } : undefined);
@@ -727,7 +793,10 @@ export class Engine {
             await db.put('observed', { ...o, childOrder: target, orderRevision: a.orderRevision });
         } else if (a.type === 'remove') {
           await journal({ globalId: a.globalId, localId: a.localId });
-          await this.backup(db, binding, 'mass_change');
+          if (!backedUp) {
+            await this.backup(db, binding, 'mass_change');
+            backedUp = true;
+          }
           // 삭제 직전 로컬 자식 재확인 (서버가 모르는 항목이 있으면 보류)
           const fresh = await getSubTree(a.localId);
           const expectedIds = new Set<string>();
@@ -1115,16 +1184,57 @@ export class Engine {
       receipt.code === 'SERVER_GENERATION_CHANGED' ||
       receipt.code === 'PROTOCOL_VERSION_MISMATCH'
     ) {
-      await setMeta(db, 'blocked', { code: receipt.code, at: Date.now() });
+      // 버전 불일치는 확장을 업데이트하면 풀린다 (version 이 바뀌면 해제)
+      await setMeta(db, 'blocked', {
+        code: receipt.code,
+        at: Date.now(),
+        version: chrome.runtime.getManifest().version,
+      });
     } else if (receipt.code === 'LIMIT_EXCEEDED' || receipt.code === 'RATE_LIMITED') {
+      // 영구 정지하지 않는다: 해당 항목만 실패, 나머지는 계속 동기화
       await setMeta(db, 'lastError', { code: receipt.code, at: Date.now() });
-      if (receipt.code === 'LIMIT_EXCEEDED')
-        await setMeta(db, 'blocked', { code: 'LIMIT_EXCEEDED', at: Date.now() });
     } else if (op.kind === 'create') {
       // 생성 거부 → 미승인 mapping 해제(다시 로컬 새 항목으로 취급, 부모 충돌이 먼저 처리됨)
       const o = await db.getFromIndex('observed', 'byGlobal', op.nodeId);
       if (o && o.revision === 0) await db.delete('observed', o.localId);
     }
+  }
+
+  /** 서버에서 지워진 서버 북마크: shadow 를 비우고 연결만 끊는다. 로컬 폴더는 그대로 둔다. */
+  private async dropCollection(db: Db, collectionId: string) {
+    const tx = db.transaction(['shadow_nodes', 'shadow_orders', 'collections'], 'readwrite');
+    for (const n of await tx
+      .objectStore('shadow_nodes')
+      .index('byCollection')
+      .getAll(collectionId)) {
+      await tx.objectStore('shadow_nodes').delete(n.id);
+      await tx.objectStore('shadow_orders').delete(n.id);
+    }
+    await tx.objectStore('collections').delete(collectionId);
+    await tx.done;
+    await this.dropBinding(db, collectionId, 'discard');
+  }
+
+  /** 연결 기록 삭제. 'keep' 이면 아직 안 보낸 outbox 는 남긴다. */
+  async dropBinding(db: Db, collectionId: string, pendingChoice: 'keep' | 'discard') {
+    const tx = db.transaction(
+      ['bindings', 'observed', 'outbox', 'conflicts', 'reviews'],
+      'readwrite',
+    );
+    await tx.objectStore('bindings').delete(collectionId);
+    for (const o of await tx.objectStore('observed').index('byCollection').getAll(collectionId))
+      await tx.objectStore('observed').delete(o.localId);
+    for (const o of await tx.objectStore('outbox').getAll())
+      if (
+        o.collectionId === collectionId &&
+        (pendingChoice === 'discard' || o.status === 'done' || o.status === 'failed')
+      )
+        await tx.objectStore('outbox').delete(o.opId);
+    for (const c of await tx.objectStore('conflicts').getAll())
+      if (c.collectionId === collectionId) await tx.objectStore('conflicts').delete(c.id);
+    for (const r of await tx.objectStore('reviews').getAll())
+      if (r.collectionId === collectionId) await tx.objectStore('reviews').delete(r.id);
+    await tx.done;
   }
 
   // -------------------------------------------------------------- 백업

@@ -138,5 +138,12 @@ export const rpc = {
       { p_envs: envs },
       ApplyManySchema,
     ),
+  deleteCollection: (c: SupabaseClient, collectionId: string) =>
+    call<{ seq: number }>(
+      c,
+      'sync_delete_collection',
+      { p_collection_id: collectionId },
+      z.object({ seq: z.number().int() }),
+    ),
   trash: (c: SupabaseClient) => call<TrashEntry[]>(c, 'sync_trash', {}, z.array(TrashEntrySchema)),
 };

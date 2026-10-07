@@ -2,12 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { send, type Request, type Response, type StateSnapshot } from '../messages';
 import { setLocale } from '../i18n';
 
-/** worker 상태를 주기적으로 읽는다(열려 있는 동안 2초). 저장된 성공 상태를 현재 성공으로 꾸미지 않는다. */
-export function useWorkerState(intervalMs = 2000) {
+/** worker 상태를 주기적으로 읽는다(보이는 동안만, 앞 요청이 끝난 뒤에만). 저장된 성공 상태를 현재 성공으로 꾸미지 않는다. */
+export function useWorkerState(intervalMs = 3000) {
   const [state, setState] = useState<StateSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [, force] = useState(0);
+  const inFlight = useRef(false);
   const refresh = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const s = await send({ type: 'getState' });
       applyPrefs(s);
@@ -15,11 +18,16 @@ export function useWorkerState(intervalMs = 2000) {
       setError(null);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      inFlight.current = false;
     }
   }, []);
   useEffect(() => {
     void refresh();
-    const t = setInterval(() => void refresh(), intervalMs);
+    const t = setInterval(
+      () => document.visibilityState === 'visible' && void refresh(),
+      intervalMs,
+    );
     const onVis = () => document.visibilityState === 'visible' && void refresh();
     document.addEventListener('visibilitychange', onVis);
     return () => {

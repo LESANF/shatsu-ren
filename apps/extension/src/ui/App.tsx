@@ -12,7 +12,7 @@ import { useHashRoute, useWorkerState } from './hooks';
 
 export function App() {
   const d = dict();
-  const { state, error, refresh } = useWorkerState(2000);
+  const { state, error, refresh } = useWorkerState();
   const [route, go] = useHashRoute();
   if (error)
     return (
