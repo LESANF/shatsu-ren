@@ -387,3 +387,26 @@ dialog::backdrop {
   color: var(--text);
   font-weight: 600;
 }
+
+.sets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-2);
+}
+.set {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+button.choice {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}

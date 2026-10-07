@@ -109,6 +109,22 @@ export const ko = {
     summaryStartCopy:
       '북마크바 맨 앞에 shatsu-ren 폴더를 만들고 「{local}」의 내용을 복사해 올려요.',
     summaryStartEmpty: '북마크바 맨 앞에 빈 shatsu-ren 폴더를 만들어요.',
+    tabDownload: '서버에서 받기',
+    tabDownloadHint: '서버에 올려 둔 북마크를 이 브라우저로 받아요.',
+    tabUpload: '이 브라우저의 폴더 올리기',
+    tabUploadHint: '폴더 하나를 이름을 붙여 서버에 올려요.',
+    noSets: '서버에 올린 북마크가 아직 없어요. "이 브라우저의 폴더 올리기"로 시작하세요.',
+    alreadyHere: '이 브라우저에 연결됨',
+    download: '받기',
+    uploadBody:
+      '올릴 폴더를 고르세요. 올린 뒤에도 이 폴더는 그대로이고, 여기서 고친 내용이 서버와 다른 브라우저에 계속 반영돼요.',
+    alreadyUploaded: '이미 연결된 폴더',
+    uploadName: '서버에 올릴 이름',
+    uploadNameHint: '다른 브라우저에서 받을 때 이 이름의 폴더가 생겨요.',
+    titleTaken: '서버에 같은 이름이 있어요. 다른 이름을 쓰세요.',
+    titleEmpty: '이름을 입력하세요.',
+    summaryUpload:
+      '이 브라우저의 「{local}」 폴더를 「{name}」 이름으로 서버에 올리고 계속 맞춰요.',
     step1Title: '1. 어떤 공유 폴더와 맞출까요?',
     step1Body:
       '다른 브라우저에서 이미 만든 공유 폴더예요. 다른 브라우저와 똑같이 맞추려면 그 브라우저가 쓰는 공유 폴더를 고르세요.',
@@ -195,7 +211,7 @@ export const ko = {
     review: '검토가 필요한 변경',
     recovery: '중단된 작업 확인 필요',
     open: '열기',
-    addFolder: '연결 추가',
+    addFolder: '올리기·받기',
   },
   binding: {
     remote: '공유 폴더',
@@ -211,6 +227,10 @@ export const ko = {
     pause: '일시 정지',
     resume: '재개',
     reselect: '로컬 폴더 다시 선택',
+    resetToServer: '서버 버전으로 되돌리기',
+    resetBody:
+      '이 브라우저의 「{local}」 폴더를 백업한 뒤 지우고, 같은 자리에 서버의 「{name}」 내용을 새로 받아요. 서버에 아직 안 올라간 이 브라우저의 변경은 백업(복구 > 이 브라우저 백업)에만 남아요.',
+    resetConfirm: '백업하고 되돌리기',
     disconnect: '이 브라우저의 연결 해제',
     disconnectBody:
       '이 브라우저의 북마크와 계정의 공유 데이터는 그대로 유지돼요. 다른 브라우저의 연결은 끊기지 않아요.',
