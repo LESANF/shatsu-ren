@@ -26,8 +26,11 @@ export const SYNC_ALARM = 'shatsu-sync';
 type StoredPlan = MergePlan & {
   collectionTitle: string;
   createCollection?: { title: string };
-  newLocalFolder?: { parentLocalId: string; title: string };
+  newLocalFolder?: { parentLocalId: string; title: string; index?: number; copyFrom?: string };
 };
+
+/** 계정당 하나의 공유 폴더. 각 브라우저에는 북마크바 맨 앞의 이 이름 폴더로 연결한다. */
+export const SHARED_TITLE = 'shatsu-ren';
 
 export class Service {
   engine: Engine;
@@ -152,6 +155,8 @@ export class Service {
         return this.previewMerge(req.localRootId, req.collectionId, req.newCollectionTitle);
       case 'previewNewLocalFolder':
         return this.previewNewLocalFolder(req.collectionId, req.parentLocalId, req.title);
+      case 'previewConnect':
+        return this.previewConnect(req.copyFrom);
       case 'applyMerge':
         return this.applyMerge(req.planId);
       case 'pauseBinding':
@@ -559,6 +564,118 @@ export class Service {
       return plan;
     });
   }
+  /**
+   * 단일 공유 폴더 정책. 계정에 공유 폴더가 없으면 새로 만들고 북마크바 맨 앞 "shatsu-ren" 폴더에
+   * copyFrom 의 내용을 복사해 올린다. 있으면 그 폴더를 받거나, 이미 있는 "shatsu-ren" 폴더와 다시 합친다.
+   */
+  private async previewConnect(copyFrom: string | null) {
+    return this.withCtx(async (ctx) => {
+      if ((await ctx.db.getAll('bindings')).length > 0)
+        throw Object.assign(new Error('already connected'), { code: 'ALREADY_BOUND' });
+      await this.engine.pull(ctx);
+      const bar = await bookmarksBar();
+      if (!bar) throw Object.assign(new Error('no bookmarks bar'), { code: 'ROOT_MISSING' });
+      const existingLocal = (await api.getChildren(bar.id)).find(
+        (c) => !c.url && c.title === SHARED_TITLE,
+      );
+      const collections = await ctx.db.getAll('collections');
+      if (collections.length > 0) {
+        const counts = new Map<string, number>();
+        for (const c of collections)
+          counts.set(
+            c.id,
+            (await ctx.db.getAllFromIndex('shadow_nodes', 'byCollection', c.id)).filter(
+              (n) => !n.deletedAt && n.kind !== 'root',
+            ).length,
+          );
+        const target = [...collections].sort(
+          (a, b) =>
+            Number(b.title === SHARED_TITLE) - Number(a.title === SHARED_TITLE) ||
+            (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0),
+        )[0]!;
+        if (existingLocal) {
+          const p = await this.previewMerge(existingLocal.id, target.id);
+          return {
+            ...p,
+            localTitle: `${bar.title} › ${existingLocal.title}`,
+            connectMode: 'rejoin' as const,
+          };
+        }
+        const p = await this.previewNewLocalFolder(target.id, bar.id, SHARED_TITLE);
+        const stored = (await getMeta<StoredPlan>(ctx.db, `mergePlan:${p.planId}`))!;
+        stored.newLocalFolder = { ...stored.newLocalFolder!, index: 0 };
+        await setMeta(ctx.db, `mergePlan:${p.planId}`, stored);
+        return {
+          ...p,
+          localTitle: `${bar.title} › ${stored.newLocalFolder.title}`,
+          connectMode: 'receive' as const,
+        };
+      }
+      // 첫 브라우저: 서버에 공유 폴더를 만들고 복사본을 올린다
+      let toServer = 0,
+        folders = 0,
+        excluded = 0;
+      const items: MergePlan['items'] = [];
+      if (copyFrom) {
+        const src = (await chrome.bookmarks.getSubTree(copyFrom))[0];
+        if (!src || src.url)
+          throw Object.assign(new Error('folder not found'), { code: 'ROOT_MISSING' });
+        const walk = (n: chrome.bookmarks.BookmarkTreeNode, path: string[]) => {
+          for (const c of n.children ?? []) {
+            if (c.url && !isSyncableUrl(c.url)) excluded++;
+            else {
+              toServer++;
+              if (!c.url) folders++;
+              items.push({
+                direction: 'toServer',
+                title: c.title,
+                kind: c.url ? 'bookmark' : 'folder',
+                path,
+              });
+            }
+            if (!c.url) walk(c, [...path, c.title]);
+          }
+        };
+        walk(src, []);
+      }
+      let name = SHARED_TITLE;
+      const siblings = await api.getChildren(bar.id);
+      for (let i = 2; siblings.some((x) => !x.url && x.title === name); i++)
+        name = `${SHARED_TITLE} (${i})`;
+      const plan: StoredPlan = {
+        planId: crypto.randomUUID(),
+        collectionId: crypto.randomUUID(),
+        rootGlobalId: crypto.randomUUID(),
+        localRootId: '',
+        headSeq: (await getMeta<number>(ctx.db, 'headSeq')) ?? 0,
+        localFingerprint: '',
+        counts: {
+          toLocal: 0,
+          toServer,
+          matched: 0,
+          duplicateCandidates: 0,
+          excluded,
+          deletes: 0,
+          folders: { toLocal: 0, toServer: folders },
+          reorderedFolders: 0,
+        },
+        items,
+        matches: [],
+        createdAt: Date.now(),
+        collectionTitle: SHARED_TITLE,
+        createCollection: { title: SHARED_TITLE },
+        newLocalFolder: {
+          parentLocalId: bar.id,
+          title: name,
+          index: 0,
+          ...(copyFrom ? { copyFrom } : {}),
+        },
+      };
+      await setMeta(ctx.db, `mergePlan:${plan.planId}`, plan);
+      return { ...plan, localTitle: `${bar.title} › ${name}`, connectMode: 'start' as const };
+    });
+  }
+
   private async applyMerge(planId: string) {
     return this.withCtx(async (ctx) => {
       const epoch = this.engine.epoch;
@@ -614,10 +731,16 @@ export class Service {
           expected: { title: plan.newLocalFolder.title, kind: 'folder' },
         });
         this.checkEpoch(epoch);
+        // 복사할 원본은 새 폴더를 만들기 전에 읽는다 (원본이 북마크바여도 새 폴더가 섞이지 않게)
+        const source = plan.newLocalFolder.copyFrom
+          ? (await chrome.bookmarks.getSubTree(plan.newLocalFolder.copyFrom))[0]
+          : null;
         const created = await api.create({
           parentId: plan.newLocalFolder.parentLocalId,
           title: plan.newLocalFolder.title,
+          ...(plan.newLocalFolder.index !== undefined ? { index: plan.newLocalFolder.index } : {}),
         });
+        if (source) await copyChildren(source, created.id);
         plan.localRootId = created.id;
         const tree = await getSubTree(created.id);
         plan.localFingerprint = await (await import('./sync/plan')).localFingerprint(tree!);
@@ -1535,3 +1658,25 @@ export class Service {
 
 export type { ConflictRecord, ReviewItem };
 export { TransportError, DomainError };
+
+/** 북마크바: folderType 이 있으면 그것, 없으면 최상위의 첫 폴더 (이름이나 숫자 ID 로 단정하지 않는다). */
+async function bookmarksBar(): Promise<chrome.bookmarks.BookmarkTreeNode | null> {
+  const [root] = await chrome.bookmarks.getTree();
+  const tops = (root?.children ?? []).filter((c) => !c.url);
+  return (
+    tops.find((c) => (c as { folderType?: string }).folderType === 'bookmarks-bar') ??
+    tops[0] ??
+    null
+  );
+}
+
+/** 원본 폴더의 자식들을 순서대로 대상 폴더에 복사한다. 원본은 건드리지 않는다. */
+async function copyChildren(src: chrome.bookmarks.BookmarkTreeNode, destId: string): Promise<void> {
+  for (const c of src.children ?? []) {
+    if (c.url) await chrome.bookmarks.create({ parentId: destId, title: c.title, url: c.url });
+    else {
+      const f = await chrome.bookmarks.create({ parentId: destId, title: c.title });
+      await copyChildren(c, f.id);
+    }
+  }
+}
