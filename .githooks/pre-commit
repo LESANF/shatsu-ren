@@ -1,0 +1,8 @@
+#!/bin/sh
+# ponytail: the git author must be an email linked to the LESANF GitHub account, or GitHub does not attribute the commit (and the badge) to the account.
+# Cloud/CI sessions tend to set a work email; this catches it before the commit exists.
+allowed="nagong1000@naver.com"
+email=$(git var GIT_AUTHOR_IDENT | sed -E 's/.*<([^>]*)>.*/\1/')
+[ "$email" = "$allowed" ] && exit 0
+echo "pre-commit: author email '$email' is not linked to the GitHub account. Fix: git config user.email $allowed" >&2
+exit 1
