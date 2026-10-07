@@ -18,6 +18,7 @@ export const ErrorCodes = [
   'DIGEST_MISMATCH',
   'CYCLE',
   'DUPLICATE_ID',
+  'DUPLICATE_TITLE',
   'ALREADY_DELETED',
   'RESTORE_CONFLICT',
   'OP_ID_REUSED',

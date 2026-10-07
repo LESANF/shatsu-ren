@@ -113,6 +113,21 @@ export const en: Dict = {
     summaryStartCopy:
       'Creates shatsu-ren at the front of the bookmarks bar and uploads a copy of “{local}”.',
     summaryStartEmpty: 'Creates an empty shatsu-ren folder at the front of the bookmarks bar.',
+    tabDownload: 'Download from server',
+    tabDownloadHint: 'Bring bookmarks you uploaded into this browser.',
+    tabUpload: 'Upload a folder from this browser',
+    tabUploadHint: 'Upload one folder to the server under a name.',
+    noSets: 'Nothing uploaded yet. Start with “Upload a folder from this browser”.',
+    alreadyHere: 'Connected here',
+    download: 'Download',
+    uploadBody:
+      'Choose the folder to upload. It stays where it is, and edits here keep syncing to the server and your other browsers.',
+    alreadyUploaded: 'Already connected',
+    uploadName: 'Name on the server',
+    uploadNameHint: 'Other browsers get a folder with this name when they download it.',
+    titleTaken: 'That name is already on the server. Choose another.',
+    titleEmpty: 'Enter a name.',
+    summaryUpload: '“{local}” in this browser will be uploaded as “{name}” and kept in sync.',
     step1Title: '1. Which shared folder should this match?',
     step1Body:
       'These were created from your other browsers. To stay in sync with a browser, pick the shared folder it uses.',
@@ -202,7 +217,7 @@ export const en: Dict = {
     review: 'Changes need review',
     recovery: 'An interrupted task needs attention',
     open: 'Open',
-    addFolder: 'Add folder',
+    addFolder: 'Upload / download',
   },
   binding: {
     remote: 'Shared folder',
@@ -218,6 +233,10 @@ export const en: Dict = {
     pause: 'Pause',
     resume: 'Resume',
     reselect: 'Reselect local folder',
+    resetToServer: 'Restore server version',
+    resetBody:
+      'Backs up “{local}” in this browser, removes it, and downloads “{name}” from the server in the same place. Unsent changes from this browser remain only in the backup (Recovery > Backups).',
+    resetConfirm: 'Back up and restore',
     disconnect: 'Disconnect this browser',
     disconnectBody:
       'Bookmarks in this browser and the shared data in your account are kept. Other browsers stay connected.',

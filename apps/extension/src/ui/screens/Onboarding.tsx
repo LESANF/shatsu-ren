@@ -173,93 +173,165 @@ function ConnectStep({
   const d = dict();
   const o = d.onboarding;
   const { run, busy, err } = useRequest();
+  const sets = state.collections;
+  const receivable = sets.filter((c) => !c.bound);
+  const [tab, setTab] = useState<'download' | 'upload'>(receivable.length ? 'download' : 'upload');
   const [tree, setTree] = useState<TreePickerNode[] | null>(null);
-  const [copy, setCopy] = useState(true);
   const [node, setNode] = useState<TreePickerNode | null>(null);
-  const shared = state.collections.length > 0;
-  const items = state.collections.reduce((n, c) => Math.max(n, c.itemCount ?? 0), 0);
+  const [title, setTitle] = useState('');
   useEffect(() => {
-    void send({ type: 'getFolderTree' }).then((t) => {
-      setTree(t);
-      if (t[0]) setNode(t[0]); // 기본: 북마크바
-    });
+    void send({ type: 'getFolderTree' }).then(setTree);
   }, []);
-  const next = async () => {
-    const p = await run({
-      type: 'previewConnect',
-      copyFrom: !shared && copy ? (node?.id ?? null) : null,
-    });
-    if (p) onPlan(p);
+  const boundRoots = new Set(state.bindings.map((b) => b.localRootId));
+  const name = title.trim();
+  const taken = !!name && sets.some((c) => c.title.trim().toLowerCase() === name.toLowerCase());
+  const meta = (c: StateSnapshot['collections'][number]) => {
+    const parts: string[] = [];
+    if (c.createdHere) parts.push(o.metaCreatedHere);
+    else if (c.createdBy) parts.push(fmt(o.metaCreatedBy, { who: c.createdBy }));
+    if (c.createdAt)
+      parts.push(
+        new Date(c.createdAt).toLocaleString(locale() === 'ko' ? 'ko-KR' : 'en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        }),
+      );
+    if (c.itemCount !== null)
+      parts.push(c.itemCount ? fmt(o.metaItems, { n: c.itemCount }) : o.metaEmpty);
+    return parts.join(' · ');
   };
+  const errText = (code: string, message: string) =>
+    code === 'DUPLICATE_TITLE'
+      ? o.titleTaken
+      : code === 'EMPTY_TITLE'
+        ? o.titleEmpty
+        : code === 'NESTED_BINDING'
+          ? o.nested
+          : code === 'MANAGED'
+            ? o.managed
+            : `${code}: ${message}`;
   return (
     <div className="card stack">
-      {shared ? (
-        <>
-          <h2>{o.joinTitle}</h2>
-          <p>{fmt(o.joinBody, { n: items })}</p>
-        </>
+      <div className="choices row-choices" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'download'}
+          className="choice"
+          data-on={tab === 'download' || undefined}
+          onClick={() => setTab('download')}
+        >
+          <span className="choice-body">
+            <strong>{o.tabDownload}</strong>
+            <span className="small muted">{o.tabDownloadHint}</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'upload'}
+          className="choice"
+          data-on={tab === 'upload' || undefined}
+          onClick={() => setTab('upload')}
+        >
+          <span className="choice-body">
+            <strong>{o.tabUpload}</strong>
+            <span className="small muted">{o.tabUploadHint}</span>
+          </span>
+        </button>
+      </div>
+
+      {tab === 'download' ? (
+        sets.length === 0 ? (
+          <p className="muted">{o.noSets}</p>
+        ) : (
+          <ul className="sets">
+            {sets.map((c) => (
+              <li key={c.id} className="set">
+                <span className="choice-body">
+                  <strong>{c.title || o.untitled}</strong>
+                  <span className="small muted">{meta(c)}</span>
+                </span>
+                {c.bound ? (
+                  <span className="badge ok">{o.alreadyHere}</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn primary"
+                    disabled={busy}
+                    onClick={() =>
+                      void run({ type: 'previewDownload', collectionId: c.id }).then(
+                        (p) => p && onPlan(p),
+                      )
+                    }
+                  >
+                    {o.download}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )
       ) : (
         <>
-          <h2>{o.startTitle}</h2>
-          <p>{o.startBody}</p>
-          <div className="choices row-choices" role="radiogroup" aria-label={o.startTitle}>
-            <label className="choice" data-on={copy || undefined}>
+          <p className="small muted">{o.uploadBody}</p>
+          {tree ? (
+            <FolderTree
+              nodes={tree}
+              selected={node?.id ?? null}
+              onSelect={(n) => {
+                setNode(n);
+                setTitle(n.title);
+              }}
+              disabledIds={boundRoots}
+              disabledReason={(n) => (boundRoots.has(n.id) ? o.alreadyUploaded : undefined)}
+            />
+          ) : (
+            <Spinner />
+          )}
+          {node && (
+            <label className="field">
+              {o.uploadName}
               <input
-                type="radio"
-                name="seed"
-                id="seed-copy"
-                checked={copy}
-                onChange={() => setCopy(true)}
+                id="upload-title"
+                className="input"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                aria-invalid={taken || undefined}
               />
-              <span className="choice-body">
-                <strong>{o.seedCopy}</strong>
-                <span className="small muted">{o.seedCopyHint}</span>
+              <span className="small" style={{ color: taken ? 'var(--danger)' : undefined }}>
+                {taken ? o.titleTaken : o.uploadNameHint}
               </span>
             </label>
-            <label className="choice" data-on={!copy || undefined}>
-              <input
-                type="radio"
-                name="seed"
-                id="seed-empty"
-                checked={!copy}
-                onChange={() => setCopy(false)}
-              />
-              <span className="choice-body">
-                <strong>{o.seedEmpty}</strong>
-                <span className="small muted">{o.seedEmptyHint}</span>
-              </span>
-            </label>
+          )}
+          <div className="summary" data-ready={node ? true : undefined} aria-live="polite">
+            {node
+              ? fmt(o.summaryUpload, { local: node.title, name: name || node.title })
+              : o.pickFolderFirst}
           </div>
-          {copy &&
-            (tree ? (
-              <FolderTree nodes={tree} selected={node?.id ?? null} onSelect={setNode} />
-            ) : (
-              <Spinner />
-            ))}
+          <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              className="btn primary lg"
+              disabled={!node || !name || taken || busy}
+              onClick={() =>
+                void run({ type: 'previewUpload', localRootId: node!.id, title: name }).then(
+                  (p) => p && onPlan(p),
+                )
+              }
+            >
+              {o.nextToPreview}
+            </button>
+          </div>
         </>
       )}
       {err && (
         <div className="alert danger" role="alert">
-          {err.code === 'ALREADY_BOUND' ? o.alreadyConnected : `${err.code}: ${err.message}`}
+          {errText(err.code, err.message)}
         </div>
       )}
-      <div className="summary" data-ready aria-live="polite">
-        {shared
-          ? o.summaryJoin
-          : copy && node
-            ? fmt(o.summaryStartCopy, { local: node.title })
-            : o.summaryStartEmpty}
-      </div>
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
-        <button
-          type="button"
-          className="btn primary lg"
-          disabled={busy || (!shared && copy && !node)}
-          onClick={() => void next()}
-        >
-          {o.nextToPreview}
-        </button>
-      </div>
     </div>
   );
 }

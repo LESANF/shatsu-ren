@@ -1,4 +1,7 @@
-/** 단일 공유 폴더 정책: 첫 브라우저는 북마크바 맨 앞 shatsu-ren 폴더에 복사본을 올리고, 다음 브라우저는 같은 폴더를 받는다. */
+/**
+ * 올리기/받기 정책: 고른 폴더를 이름을 붙여 서버에 올리면(연결 유지) 다른 브라우저는 북마크바 맨 앞에
+ * 같은 이름 폴더로 받아 연결한다. 이름은 계정 안에서 겹치지 않는다. 되돌리기는 서버 내용으로 다시 받는다.
+ */
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   launch,
@@ -12,26 +15,35 @@ import {
 
 let A: ExtBrowser;
 let B: ExtBrowser;
-const email = `synthetic-connect-${Date.now()}@example.com`,
-  password = 'synthetic-pass-1!';
+const email = `synthetic-connect-${Date.now()}@example.com`;
+const password = 'synthetic-pass-1!';
 afterAll(async () => {
   await A?.close().catch(() => undefined);
   await B?.close().catch(() => undefined);
 });
 
-const bar = async (b: ExtBrowser) => (await b.bookmarks<BmNode[]>('getTree'))[0]!.children![0]!;
-const shatsu = async (b: ExtBrowser) => {
-  const k = (await subtree(b, (await bar(b)).id)).children!;
-  return { first: k[0]!, all: k.filter((c) => c.title === 'shatsu-ren') };
+type Plan = {
+  planId: string;
+  connectMode: string;
+  counts: { toServer: number; toLocal: number; deletes: number };
 };
+const bar = async (b: ExtBrowser) => (await b.bookmarks<BmNode[]>('getTree'))[0]!.children![0]!;
+const barKids = async (b: ExtBrowser) => (await subtree(b, (await bar(b)).id)).children!;
+const idle = (b: ExtBrowser) =>
+  waitFor(async () => {
+    const s = await b.send<{ status: string; counts: { outbox: number } }>({ type: 'getState' });
+    return s.status === 'idle' && s.counts.outbox === 0;
+  }, 30000);
 
-describe('single shared folder', () => {
-  it('first browser copies a folder into bar-front shatsu-ren; second browser receives it; edits flow both ways', async () => {
+describe('upload / download', () => {
+  it('upload a named folder, download elsewhere, sync both ways, reject duplicate names, restore server version', async () => {
     A = await launch('chromium');
     B = await launch('aside');
     await A.send({ type: 'loginDev', email, password });
-    const barA = await bar(A);
-    const src = await A.bookmarks<BmNode>('create', { parentId: barA.id, title: '내 북마크' });
+    const src = await A.bookmarks<BmNode>('create', {
+      parentId: (await bar(A)).id,
+      title: '내 북마크',
+    });
     await A.bookmarks('create', {
       parentId: src.id,
       title: 'Example A',
@@ -43,42 +55,50 @@ describe('single shared folder', () => {
       title: 'Example B',
       url: 'https://example.com/b',
     });
-    const before = shape(await subtree(A, src.id));
 
-    const p = await A.send<{
-      planId: string;
-      connectMode: string;
-      counts: { toServer: number; deletes: number };
-    }>({ type: 'previewConnect', copyFrom: src.id });
-    expect(p.connectMode).toBe('start');
-    expect(p.counts.toServer).toBe(3);
-    expect(p.counts.deletes).toBe(0);
-    await A.send({ type: 'applyMerge', planId: p.planId });
-    const a1 = await shatsu(A);
-    expect(a1.first.title).toBe('shatsu-ren'); // 북마크바 맨 앞
-    expect(shape(await subtree(A, src.id))).toEqual(before); // 원본 그대로
-    await waitFor(async () => {
-      const s = await A.send<{ status: string; counts: { outbox: number } }>({ type: 'getState' });
-      return s.status === 'idle' && s.counts.outbox === 0;
-    }, 30000);
+    const up = await A.send<Plan>({ type: 'previewUpload', localRootId: src.id, title: '테스트1' });
+    expect(up.connectMode).toBe('upload');
+    expect(up.counts.toServer).toBe(3);
+    expect(up.counts.deletes).toBe(0);
+    await A.send({ type: 'applyMerge', planId: up.planId });
+    await idle(A);
+    // 같은 이름은 거부 (앞뒤 공백·대소문자 무시)
+    const other = await A.bookmarks<BmNode>('create', {
+      parentId: (await bar(A)).id,
+      title: '다른 폴더',
+    });
+    await expect(
+      A.send({ type: 'previewUpload', localRootId: other.id, title: ' 테스트1 ' }),
+    ).rejects.toThrow(/DUPLICATE_TITLE/);
 
     await B.send({ type: 'loginDev', email, password });
-    const q = await B.send<{ planId: string; connectMode: string; counts: { toLocal: number } }>({
-      type: 'previewConnect',
-      copyFrom: null,
+    const down = await B.send<{ collections: { id: string; title: string }[] }>({
+      type: 'getState',
     });
-    expect(q.connectMode).toBe('receive');
-    expect(q.counts.toLocal).toBe(3);
-    await B.send({ type: 'applyMerge', planId: q.planId });
-    const same = async () =>
-      JSON.stringify(shape(await subtree(A, (await shatsu(A)).first.id))) ===
-      JSON.stringify(shape(await subtree(B, (await shatsu(B)).first.id)));
+    const set = down.collections.find((c) => c.title === '테스트1')!;
+    const dn = await B.send<Plan>({ type: 'previewDownload', collectionId: set.id });
+    expect(dn.connectMode).toBe('receive');
+    expect(dn.counts.toLocal).toBe(3);
+    await B.send({ type: 'applyMerge', planId: dn.planId });
+    const bFolder = async () => (await barKids(B))[0]!;
+    await waitFor(
+      async () =>
+        (await bFolder()).title === '테스트1' &&
+        (await subtree(B, (await bFolder()).id)).children!.length === 2,
+      30000,
+    );
+    const kids = async (b: ExtBrowser, id: string) =>
+      JSON.stringify((shape(await subtree(b, id)) as { c: unknown[] }).c);
+    const same = async () => (await kids(A, src.id)) === (await kids(B, (await bFolder()).id));
     await waitFor(same, 30000);
-    expect((await shatsu(B)).first.title).toBe('shatsu-ren');
-    expect((await shatsu(B)).all.length).toBe(1);
+    // 이미 받은 것은 다시 받을 수 없다 (중복 폴더 방지)
+    await expect(B.send({ type: 'previewDownload', collectionId: set.id })).rejects.toThrow(
+      /ALREADY_BOUND/,
+    );
 
+    // 양방향
     await B.bookmarks('create', {
-      parentId: (await shatsu(B)).first.id,
+      parentId: (await bFolder()).id,
       title: 'From Aside',
       url: 'https://example.com/aside',
     });
@@ -88,7 +108,7 @@ describe('single shared folder', () => {
       30000,
     );
     await A.bookmarks('create', {
-      parentId: (await shatsu(A)).first.id,
+      parentId: src.id,
       title: 'From Chromium',
       url: 'https://example.com/chromium',
     });
@@ -99,29 +119,39 @@ describe('single shared folder', () => {
       30000,
     );
     await waitFor(same, 30000);
-  }, 240000);
 
-  it('screens: connect step (first and second browser)', async () => {
+    // 되돌리기: B 에만 있는(올라가지 않은) 항목은 사라지고 서버 내용으로 다시 받는다
+    await B.send({ type: 'setSettings', patch: { autoSync: false } });
+    await B.bookmarks('create', {
+      parentId: (await bFolder()).id,
+      title: 'local only',
+      url: 'https://example.com/local-only',
+    });
+    const st = await B.send<{ bindings: { collectionId: string }[] }>({ type: 'getState' });
+    await B.send({ type: 'resetToServer', collectionId: st.bindings[0]!.collectionId });
+    expect(
+      (await B.bookmarks<BmNode[]>('search', { url: 'https://example.com/local-only' })).length,
+    ).toBe(0);
+    await B.send({ type: 'setSettings', patch: { autoSync: true } });
+    await idle(B);
+    expect((await barKids(B))[0]!.title).toBe('테스트1');
+    expect((await barKids(B)).filter((c) => c.title === '테스트1').length).toBe(1);
+    await waitFor(same, 30000);
+  }, 300000);
+
+  it('screens: upload and download tabs', async () => {
     const C = await launch('chromium');
     await C.send({ type: 'loginDev', email, password });
     await C.send({ type: 'syncNow' });
     const pg = await C.context.newPage();
-    await pg.setViewportSize({ width: 820, height: 700 });
+    await pg.setViewportSize({ width: 820, height: 800 });
     await pg.goto(`chrome-extension://${C.extensionId}/app.html#/onboarding`);
     await pg.waitForTimeout(2500);
-    await pg.screenshot({ path: `${SHOTS_DIR}/connect-join.png`, fullPage: true });
+    await pg.screenshot({ path: `${SHOTS_DIR}/connect-download.png`, fullPage: true });
+    await pg.getByRole('tab').nth(1).click();
+    await pg.locator('.tree .node').first().click();
+    await pg.waitForTimeout(300);
+    await pg.screenshot({ path: `${SHOTS_DIR}/connect-upload.png`, fullPage: true });
     await C.close();
-    const D = await launch('chromium');
-    await D.send({
-      type: 'loginDev',
-      email: `synthetic-connect-new-${Date.now()}@example.com`,
-      password,
-    });
-    const pd = await D.context.newPage();
-    await pd.setViewportSize({ width: 820, height: 900 });
-    await pd.goto(`chrome-extension://${D.extensionId}/app.html#/onboarding`);
-    await pd.waitForTimeout(2500);
-    await pd.screenshot({ path: `${SHOTS_DIR}/connect-start.png`, fullPage: true });
-    await D.close();
   }, 120000);
 });
