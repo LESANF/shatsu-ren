@@ -6,5 +6,12 @@ while read -r _local_ref _local_sha remote_ref _remote_sha; do
       echo "pre-push: direct push to main is blocked. Open a PR: gh pr create --base main --head $(git rev-parse --abbrev-ref HEAD)" >&2
       exit 1 ;;
   esac
+  # same author-email rule as pre-commit, for commits made with --no-verify or elsewhere
+  bad=$(git log --format='%h %ae' "$_remote_sha".."$_local_sha" 2>/dev/null | grep -v ' nagong1000@naver.com$' || git log --format='%h %ae' "$_local_sha" --not --remotes 2>/dev/null | grep -v ' nagong1000@naver.com$')
+  if [ -n "$bad" ]; then
+    echo "pre-push: commits with an author email not linked to the GitHub account:" >&2; echo "$bad" >&2
+    echo "Fix: git rebase --exec 'git commit --amend --no-edit --reset-author' <base>  (after git config user.email nagong1000@naver.com)" >&2
+    exit 1
+  fi
 done
 exit 0
