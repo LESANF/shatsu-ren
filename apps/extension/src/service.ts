@@ -1,5 +1,5 @@
 /** worker 측 요청 처리. 모든 화면 상태는 여기(실제 엔진·DB) 에서 읽는다. */
-import type { DeviceRecord } from 'shatsu-ren-protocol';
+import type { CollectionRecord, DeviceRecord } from 'shatsu-ren-protocol';
 import { isSyncableUrl, LIMITS } from 'shatsu-ren-protocol';
 import { currentSession, dropClient, getClient, loginDev, loginWithGoogle } from './auth/session';
 import { DEV_AUTH, getBackend, setCustomBackend, VERSION, hostPattern } from './config';
@@ -385,12 +385,7 @@ export class Service {
       nextRetryAt: (await getMeta<number>(db, 'nextRetryAt')) ?? null,
       counts: { outbox, pendingApply, conflicts, reviews, recovery },
       bindings: bindingsView,
-      collections: collections.map((c) => ({
-        id: c.id,
-        title: c.title,
-        rootNodeId: c.rootNodeId,
-        bound: bindings.some((b) => b.collectionId === c.id),
-      })),
+      collections: await this.collectionsView(res.ctx, collections, bindings),
       recent: (await this.listHistory(undefined, 5)).items,
       lastError,
       blocked,
@@ -1137,6 +1132,52 @@ export class Service {
   }
 
   // -------------------------------------------------------------- 내역·장치·휴지통·백업
+  /** 공유 폴더 목록 + 구분 정보(만든 브라우저·시각·항목 수). 연결 안 된 것만 항목 수를 센다(폴링 비용). */
+  private devicesFetchedAt = 0;
+  private async collectionsView(
+    ctx: Ctx,
+    collections: CollectionRecord[],
+    bindings: { collectionId: string }[],
+  ): Promise<StateSnapshot['collections']> {
+    const { db, account } = ctx;
+    if (!this.devices.length) this.devices = (await getMeta<DeviceRecord[]>(db, 'devices')) ?? [];
+    const unknown = collections.some(
+      (c) => c.createdByDeviceId && !this.devices.some((d) => d.id === c.createdByDeviceId),
+    );
+    if (unknown && Date.now() - this.devicesFetchedAt > 60_000) {
+      this.devicesFetchedAt = Date.now();
+      try {
+        this.devices = await rpc.devices(ctx.client);
+        await setMeta(db, 'devices', this.devices);
+      } catch {
+        /* 오프라인: 만든 브라우저 이름 없이 표시 */
+      }
+    }
+    const out: StateSnapshot['collections'] = [];
+    for (const c of collections) {
+      const bound = bindings.some((b) => b.collectionId === c.id);
+      let itemCount: number | null = null;
+      if (!bound) {
+        const nodes = await db.getAllFromIndex('shadow_nodes', 'byCollection', c.id);
+        itemCount = nodes.filter((n) => !n.deletedAt && n.kind !== 'root').length;
+      }
+      const dev = c.createdByDeviceId
+        ? this.devices.find((d) => d.id === c.createdByDeviceId)
+        : undefined;
+      out.push({
+        id: c.id,
+        title: c.title,
+        rootNodeId: c.rootNodeId,
+        bound,
+        itemCount,
+        createdAt: c.createdAt ?? null,
+        createdBy: dev ? dev.label || dev.browser || null : null,
+        createdHere: !!c.createdByDeviceId && c.createdByDeviceId === account.deviceId,
+      });
+    }
+    return out;
+  }
+
   private async listHistory(
     beforeSeq: number | undefined,
     limit: number,

@@ -31,7 +31,18 @@ export interface StateSnapshot {
     recovery: number;
   };
   bindings: (Binding & { title: string; rootTitle: string | null; itemCount: number })[];
-  collections: { id: string; title: string; rootNodeId: string; bound: boolean }[];
+  collections: {
+    id: string;
+    title: string;
+    rootNodeId: string;
+    bound: boolean;
+    /** 연결 안 된 공유 폴더만 계산. 북마크·폴더 합계 */
+    itemCount: number | null;
+    createdAt: string | null;
+    /** 만든 브라우저의 장치 이름 (모르면 null) */
+    createdBy: string | null;
+    createdHere: boolean;
+  }[];
   recent: RecentChange[];
   lastError: { code: string; message?: string; at: number } | null;
   blocked: { code: string; at: number } | null;

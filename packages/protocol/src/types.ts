@@ -37,6 +37,8 @@ export interface CollectionRecord {
   title: string;
   rootNodeId: string;
   revision: number;
+  createdAt?: string | undefined;
+  createdByDeviceId?: string | null | undefined;
 }
 
 export interface DeviceRecord {
