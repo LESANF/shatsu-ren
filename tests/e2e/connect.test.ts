@@ -139,6 +139,72 @@ describe('upload / download', () => {
     await waitFor(same, 30000);
   }, 300000);
 
+  it('upload with "also create a synced folder here": copy at bar front is connected, original untouched', async () => {
+    const e2 = `synthetic-copy-${Date.now()}@example.com`;
+    const C = await launch('chromium');
+    const D = await launch('aside');
+    try {
+      await C.send({ type: 'loginDev', email: e2, password });
+      const src = await C.bookmarks<BmNode>('create', {
+        parentId: (await bar(C)).id,
+        title: '원본',
+      });
+      await C.bookmarks('create', {
+        parentId: src.id,
+        title: 'Example C',
+        url: 'https://example.com/c',
+      });
+      const before = shape(await subtree(C, src.id));
+      const up = await C.send<Plan>({
+        type: 'previewUpload',
+        localRootId: src.id,
+        title: '클라우드2',
+        makeSyncFolder: true,
+      });
+      expect(up.counts.toServer).toBe(1);
+      await C.send({ type: 'applyMerge', planId: up.planId });
+      await idle(C);
+      const front = (await barKids(C))[0]!;
+      expect(front.title).toBe('클라우드2');
+      expect(shape(await subtree(C, src.id))).toEqual(before);
+      const st = await C.send<{ bindings: { localRootId: string }[] }>({ type: 'getState' });
+      expect(st.bindings.map((b) => b.localRootId)).toEqual([front.id]); // 원본은 연결 안 됨
+
+      await D.send({ type: 'loginDev', email: e2, password });
+      const sets = await D.send<{ collections: { id: string; title: string }[] }>({
+        type: 'getState',
+      });
+      const dn = await D.send<Plan>({
+        type: 'previewDownload',
+        collectionId: sets.collections.find((c) => c.title === '클라우드2')!.id,
+      });
+      await D.send({ type: 'applyMerge', planId: dn.planId });
+      await waitFor(
+        async () =>
+          (await D.bookmarks<BmNode[]>('search', { url: 'https://example.com/c' })).length === 1,
+        30000,
+      );
+      await C.bookmarks('create', {
+        parentId: front.id,
+        title: 'via copy',
+        url: 'https://example.com/via-copy',
+      });
+      await waitFor(
+        async () =>
+          (await D.bookmarks<BmNode[]>('search', { url: 'https://example.com/via-copy' }))
+            .length === 1,
+        30000,
+      );
+      expect(
+        (await C.bookmarks<BmNode[]>('search', { url: 'https://example.com/via-copy' }))[0]!
+          .parentId,
+      ).toBe(front.id);
+    } finally {
+      await C.close().catch(() => undefined);
+      await D.close().catch(() => undefined);
+    }
+  }, 240000);
+
   it('screens: upload and download tabs', async () => {
     const C = await launch('chromium');
     await C.send({ type: 'loginDev', email, password });

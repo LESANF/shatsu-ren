@@ -179,6 +179,7 @@ function ConnectStep({
   const [tree, setTree] = useState<TreePickerNode[] | null>(null);
   const [node, setNode] = useState<TreePickerNode | null>(null);
   const [title, setTitle] = useState('');
+  const [makeSync, setMakeSync] = useState(true); // 기본: 모든 브라우저가 북마크바 맨 앞 동기화 폴더를 기준으로
   useEffect(() => {
     void send({ type: 'getFolderTree' }).then(setTree);
   }, []);
@@ -306,6 +307,20 @@ function ConnectStep({
               </span>
             </label>
           )}
+          {node && (
+            <label className="choice" data-on={makeSync || undefined}>
+              <input
+                type="checkbox"
+                id="make-sync-folder"
+                checked={makeSync}
+                onChange={(e) => setMakeSync(e.target.checked)}
+              />
+              <span className="choice-body">
+                <strong>{o.makeSyncFolder}</strong>
+                <span className="small muted">{o.makeSyncFolderHint}</span>
+              </span>
+            </label>
+          )}
           <div className="summary" data-ready={node ? true : undefined} aria-live="polite">
             {node
               ? fmt(o.summaryUpload, { local: node.title, name: name || node.title })
@@ -317,9 +332,12 @@ function ConnectStep({
               className="btn primary lg"
               disabled={!node || !name || taken || busy}
               onClick={() =>
-                void run({ type: 'previewUpload', localRootId: node!.id, title: name }).then(
-                  (p) => p && onPlan(p),
-                )
+                void run({
+                  type: 'previewUpload',
+                  localRootId: node!.id,
+                  title: name,
+                  makeSyncFolder: makeSync,
+                }).then((p) => p && onPlan(p))
               }
             >
               {o.nextToPreview}
