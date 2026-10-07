@@ -14,7 +14,7 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r --if-present test",
     "test:db": "supabase test db",
-    "test:e2e": "pnpm --filter shatsu-ren-e2e test",
+    "test:e2e": "pnpm --filter shatsu-ren-tests test:e2e",
     "build": "pnpm --filter shatsu-ren-protocol build && pnpm --filter shatsu-ren-extension build",
     "zip": "pnpm --filter shatsu-ren-protocol build && pnpm --filter shatsu-ren-extension zip",
     "db:start": "supabase start",

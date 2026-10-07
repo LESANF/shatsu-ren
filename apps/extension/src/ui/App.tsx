@@ -12,8 +12,17 @@ import { useHashRoute, useWorkerState } from './hooks';
 
 export function App() {
   const d = dict();
-  const { state, refresh } = useWorkerState(2000);
+  const { state, error, refresh } = useWorkerState(2000);
   const [route, go] = useHashRoute();
+  if (error)
+    return (
+      <div className="alert danger" role="alert">
+        {d.common.error}: {error}
+        <button className="btn" type="button" onClick={() => void refresh()}>
+          {d.common.retry}
+        </button>
+      </div>
+    );
   if (!state)
     return (
       <div style={{ padding: 24 }}>

@@ -37,11 +37,16 @@ export function ReviewDetail({
       type: 'resolveReview',
       id,
       resolution,
+      ...(r.fingerprint ? { fingerprint: r.fingerprint } : {}),
       ...(cand ? { candidateLocalId: cand } : {}),
     }).then((res) => {
       if (res) {
         void refresh();
         go('/folders');
+      } else {
+        void send({ type: 'listReviews' }).then((items) =>
+          setR(items.find((item) => item.id === id) ?? null),
+        );
       }
     });
   const exportNow = () =>
@@ -96,6 +101,16 @@ export function ReviewDetail({
         </div>
       )}
       <div className="row" style={{ flexWrap: 'wrap' }}>
+        {r.kind === 'generation_recovery' && (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={busy}
+            onClick={() => resolve('approve')}
+          >
+            {d.common.confirm}
+          </button>
+        )}
         {r.kind === 'mass_delete_out' && (
           <>
             <button
