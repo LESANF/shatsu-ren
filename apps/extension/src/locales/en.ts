@@ -96,6 +96,23 @@ export const en: Dict = {
     privacyLink: 'Privacy notice',
     signedInAs: 'Signed in as {email}',
     changeAccount: 'Change account',
+    startTitle: 'Create a shatsu-ren folder at the front of the bookmarks bar',
+    startBody:
+      'This folder stays identical in every browser. Connecting another browser creates the same folder there.',
+    seedCopy: 'Start with a copy of a folder',
+    seedCopyHint:
+      'Copies the bookmarks of the folder you pick below into shatsu-ren. The original stays as it is.',
+    seedEmpty: 'Start empty',
+    seedEmptyHint: 'Only what you put into shatsu-ren from now on is synced.',
+    joinTitle: 'Receive your shatsu-ren folder',
+    joinBody:
+      'Creates a shatsu-ren folder at the front of the bookmarks bar and receives the {n} items in your account. Other bookmarks here are untouched.',
+    alreadyConnected: 'This browser is already connected.',
+    summaryJoin:
+      'A shatsu-ren folder appears at the front of the bookmarks bar with your account’s content. If one already exists, it is merged.',
+    summaryStartCopy:
+      'Creates shatsu-ren at the front of the bookmarks bar and uploads a copy of “{local}”.',
+    summaryStartEmpty: 'Creates an empty shatsu-ren folder at the front of the bookmarks bar.',
     step1Title: '1. Which shared folder should this match?',
     step1Body:
       'These were created from your other browsers. To stay in sync with a browser, pick the shared folder it uses.',
