@@ -99,11 +99,9 @@ export function Overview({
         <div className="row between">
           <h2>{d.nav.folders}</h2>
           <div className="row">
-            {state.bindings.length === 0 && (
-              <a className="btn" href="#/onboarding">
-                {d.overview.addFolder}
-              </a>
-            )}
+            <a className="btn" href="#/onboarding">
+              {d.overview.addFolder}
+            </a>
             <a className="btn" href="#/settings#devices">
               {d.overview.connectedBrowsers}
             </a>
