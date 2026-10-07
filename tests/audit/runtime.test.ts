@@ -86,7 +86,7 @@ const idle = (b: ExtBrowser) =>
     async () => b.send({ type: 'diagnostics' }),
   );
 
-it('BROWSER-AUD-01 same-account sharing continues while deletion is reviewed, with stale approval protection', async () => {
+it('BROWSER-AUD-01 same-account sharing; folder delete vs unseen remote edit becomes a conflict; plain deletes follow', async () => {
   const u = await syntheticUser('audit-browser');
   users.push(u.userId);
   const a = await launch('chromium', { extDir });
@@ -158,88 +158,34 @@ it('BROWSER-AUD-01 same-account sharing continues while deletion is reviewed, wi
   expect(after.nodes.find((n) => n.id === child.id)?.title).toBe('new unseen remote edit');
   const trash = await a.send<{ itemCount: number; rootTitle: string }[]>({ type: 'listTrash' });
   expect(trash).toHaveLength(0);
-  expect((await state(a)).counts.conflicts).toBe(0);
-  expect((await state(a)).counts.reviews).toBeGreaterThan(0);
-  type Review = { id: string; kind: string; fingerprint: string; items: { title: string }[] };
-  const review = (await a.send<Review[]>({ type: 'listReviews' })).find(
-    (r) => r.kind === 'mass_delete_out',
+  // 폴더 삭제 vs 안쪽 항목 원격 수정: 조용히 지우지 않고 충돌로 묻는다
+  type Conflict = { id: string; kind: string; fingerprint: string };
+  const conflict = (await a.send<Conflict[]>({ type: 'listConflicts' })).find(
+    (c) => c.kind === 'local_delete_remote_edit',
   )!;
-  expect(review.items.some((item) => item.title === 'new unseen remote edit')).toBe(true);
-  for (const x of [a, b]) await x.send({ type: 'setSettings', patch: { autoSync: true } });
-  await b.bookmarks('create', {
-    parentId: fb.id,
-    title: 'shared during review',
-    url: 'https://example.com/during-review',
-  });
-  await waitFor(
-    async () => (await subtree(a, fa.id)).children?.some((n) => n.title === 'shared during review'),
-    15000,
-    50,
-    async () => ({
-      A: await a.send({ type: 'diagnostics' }),
-      B: await b.send({ type: 'diagnostics' }),
-    }),
-  );
-  await b.bookmarks('update', remoteChild.id, { title: 'changed after review' });
-  await b.bookmarks('create', {
-    parentId: remoteChild.parentId!,
-    title: 'new child after review',
-    url: 'https://example.com/new-reviewed-child',
-  });
-  await b.send({ type: 'syncNow' });
-  await expect(
-    a.send({
-      type: 'resolveReview',
-      id: review.id,
-      resolution: 'approve',
-      fingerprint: review.fingerprint,
-    }),
-  ).rejects.toMatchObject({ code: 'RECHECK' });
-  expect((await snapshot(u.client)).nodes.find((n) => n.id === child.id)?.title).toBe(
-    'changed after review',
-  );
-  const refreshed = (await a.send<Review[]>({ type: 'listReviews' })).find(
-    (r) => r.id === review.id,
-  )!;
-  expect(refreshed.items.some((item) => item.title === 'new child after review')).toBe(true);
+  expect(conflict).toBeTruthy();
   await a.send({
-    type: 'resolveReview',
-    id: refreshed.id,
-    resolution: 'restore',
-    fingerprint: refreshed.fingerprint,
+    type: 'resolveConflict',
+    id: conflict.id,
+    resolution: 'theirs',
+    fingerprint: conflict.fingerprint,
   });
   await waitFor(
     async () =>
       (await a.bookmarks<BmNode[]>('search', { url: 'https://example.com/audit-child' }))[0]
-        ?.title === 'changed after review',
+        ?.title === 'new unseen remote edit',
     15000,
     50,
   );
+  for (const x of [a, b]) await x.send({ type: 'setSettings', patch: { autoSync: true } });
   await idle(a);
   await idle(b);
+
+  // 평범한 삭제는 확인 없이 따라가고, 휴지통에서 되살릴 수 있다
   const removable = (
     await a.bookmarks<BmNode[]>('search', { url: 'https://example.com/audit-child' })
   )[0]!;
   await a.bookmarks('remove', removable.id);
-  await a.send({ type: 'syncNow' });
-  const deletion = (await a.send<Review[]>({ type: 'listReviews' })).find(
-    (r) => r.kind === 'mass_delete_out',
-  )!;
-  await a.send({
-    type: 'resolveReview',
-    id: deletion.id,
-    resolution: 'approve',
-    fingerprint: deletion.fingerprint,
-  });
-  await waitFor(async () => (await state(b)).counts.reviews > 0, 15000, 50);
-  expect(
-    await b.bookmarks<BmNode[]>('search', { url: 'https://example.com/audit-child' }),
-  ).toHaveLength(1);
-  const incoming = (await b.send<Review[]>({ type: 'listReviews' })).find(
-    (r) => r.kind === 'mass_delete_in',
-  )!;
-  await b.app.goto(`chrome-extension://${b.extensionId}/app.html#/review/${incoming.id}`);
-  await b.app.getByRole('button', { name: '여기서도 삭제', exact: true }).click();
   await waitFor(
     async () =>
       (await b.bookmarks<BmNode[]>('search', { url: 'https://example.com/audit-child' })).length ===
@@ -247,7 +193,8 @@ it('BROWSER-AUD-01 same-account sharing continues while deletion is reviewed, wi
     15000,
     50,
   );
-  await b.app.screenshot({ path: resolve(shots, 'aside-deletion-approved.png'), fullPage: true });
+  expect((await state(a)).counts.reviews).toBe(0);
+  expect((await state(b)).counts.reviews).toBe(0);
   expect((await b.send<unknown[]>({ type: 'listBackups' })).length).toBeGreaterThan(0);
   const approvedTrash = await a.send<
     { deletionId: string; collectionId: string; itemCount: number }[]
@@ -267,6 +214,17 @@ it('BROWSER-AUD-01 same-account sharing continues while deletion is reviewed, wi
       15000,
       50,
     );
+  // 순서 충돌을 만들려면 항목이 3개 이상 필요
+  await b.bookmarks('create', {
+    parentId: fb.id,
+    title: 'third',
+    url: 'https://example.com/audit-third',
+  });
+  await waitFor(
+    async () => (await subtree(a, fa.id)).children?.some((n) => n.title === 'third'),
+    15000,
+    50,
+  );
   await idle(a);
   await idle(b);
   for (const x of [a, b]) await x.send({ type: 'setSettings', patch: { autoSync: false } });

@@ -30,7 +30,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   autoSync: true,
   realtime: true,
-  pollMinutes: 5,
+  pollMinutes: 240,
   locale: 'auto',
   theme: 'auto',
   deviceLabel: '',

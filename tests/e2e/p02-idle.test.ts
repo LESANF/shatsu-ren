@@ -74,7 +74,10 @@ describe('P02 장시간 유휴', () => {
         psql(`select count(*) from shatsu.operation_receipts where workspace_id='${ws}'`),
       );
       const health = (b: ExtBrowser) =>
-        b.worker.evaluate(() => chrome.runtime.sendMessage({ type: 'diagnostics' }));
+        // 페이지를 모두 닫으면 worker 자기 자신에게 보내는 메시지는 받을 곳이 없다 → 기록만 생략
+        b.worker
+          .evaluate(() => chrome.runtime.sendMessage({ type: 'diagnostics' }))
+          .catch((e: Error) => ({ unavailable: e.message }));
       const diagA = await health(A);
       const diagB = await health(B);
       console.log('P02 after-idle diag', JSON.stringify({ A: diagA, B: diagB }).slice(0, 1500));
