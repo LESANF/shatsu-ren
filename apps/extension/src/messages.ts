@@ -64,7 +64,7 @@ export type Request =
       newCollectionTitle?: string;
     }
   | { type: 'previewNewLocalFolder'; collectionId: string; parentLocalId: string; title: string }
-  | { type: 'previewUpload'; localRootId: string; title: string }
+  | { type: 'previewUpload'; localRootId: string; title: string; makeSyncFolder?: boolean }
   | { type: 'previewDownload'; collectionId: string }
   | { type: 'resetToServer'; collectionId: string }
   | { type: 'applyMerge'; planId: string }
