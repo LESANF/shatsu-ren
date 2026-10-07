@@ -64,7 +64,11 @@ export interface JournalEntry {
 }
 
 export type ConflictKind =
-  'edit_edit' | 'local_edit_remote_delete' | 'local_delete_remote_edit' | 'move_move';
+  | 'edit_edit'
+  | 'local_edit_remote_delete'
+  | 'local_delete_remote_edit'
+  | 'move_move'
+  | 'order_order';
 
 export interface ConflictRecord {
   id: string;
@@ -86,10 +90,17 @@ export interface ConflictRecord {
   createdAt: number;
   resolvedAt?: number;
   resolution?: 'mine' | 'theirs' | 'both';
+  fingerprint?: string;
+  orders?: { base: string[]; local: string[]; remote: string[]; remoteRevision: number };
 }
 
 export type ReviewKind =
-  'mass_delete_out' | 'mass_delete_in' | 'moved_out' | 'create_recovery' | 'excluded_url';
+  | 'mass_delete_out'
+  | 'mass_delete_in'
+  | 'moved_out'
+  | 'create_recovery'
+  | 'excluded_url'
+  | 'generation_recovery';
 
 export interface ReviewItem {
   id: string;
@@ -107,6 +118,7 @@ export interface ReviewItem {
   }[];
   /** 범위 크기(비율 표시용) */
   scopeCount?: number;
+  fingerprint?: string;
   /** create_recovery: 후보 목록 */
   candidates?: { localId: string; title: string; url: string | null }[];
   journalId?: string;

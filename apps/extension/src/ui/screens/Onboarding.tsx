@@ -33,6 +33,9 @@ export function Onboarding({
     <div style={{ maxWidth: 720, margin: '0 auto', padding: 24 }} className="stack">
       <div className="row between">
         <h1>{d.appName}</h1>
+        <a className="btn" href="#/settings">
+          {d.common.openSettings}
+        </a>
         {state.account && (
           <span className="small muted">
             {fmt(d.onboarding.signedInAs, { email: state.account.email })}

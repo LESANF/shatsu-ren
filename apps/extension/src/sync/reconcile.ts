@@ -5,7 +5,14 @@
 import type { FolderOrder, NodeRecord } from 'shatsu-ren-protocol';
 import { isSyncableUrl } from 'shatsu-ren-protocol';
 import type { LocalTree } from './browser';
-import type { Binding, ConflictKind, ObservedNode, OutboxEntry } from './types';
+import type {
+  Binding,
+  ConflictKind,
+  ConflictRecord,
+  ObservedNode,
+  OutboxEntry,
+  ReviewItem,
+} from './types';
 
 export interface ReconcileInput {
   binding: Binding;
@@ -98,6 +105,7 @@ export type OpDraft =
     };
 
 export interface ConflictDraft {
+  orders?: NonNullable<ConflictRecord['orders']>;
   globalId: string;
   localId: string | null;
   kind: ConflictKind;
@@ -144,10 +152,6 @@ export interface ReconcileOutput {
   };
 }
 
-const MASS_ABS = 20;
-const MASS_MIN = 5;
-const MASS_RATIO = 0.2;
-
 export function reconcile(inp: ReconcileInput): ReconcileOutput {
   const { local, observed, shadowNodes, shadowOrders, pendingOps, openConflicts } = inp;
   const out: ReconcileOutput = {
@@ -169,6 +173,20 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
   };
   const rootLocal = local.rootId;
   const collectionId = inp.binding.collectionId;
+  const observedChildren = new Map<string, string[]>();
+  const shadowChildren = new Map<string, string[]>();
+  for (const n of shadowNodes.values()) {
+    if (!n.parentId || n.deletedAt) continue;
+    const children = shadowChildren.get(n.parentId) ?? [];
+    children.push(n.id);
+    shadowChildren.set(n.parentId, children);
+  }
+  for (const o of observed.values()) {
+    if (!o.parentLocalId) continue;
+    const children = observedChildren.get(o.parentLocalId) ?? [];
+    children.push(o.localId);
+    observedChildren.set(o.parentLocalId, children);
+  }
 
   // globalId → localId (observed 기준)
   const g2l = new Map<string, string>();
@@ -242,6 +260,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
   const stack = [...(local.children.get(rootLocal) ?? [])].reverse();
   while (stack.length) {
     const id = stack.pop()!;
+    if (local.nodes.get(id)?.unmodifiable) continue;
     walkOrder.push(id);
     const kids = local.children.get(id) ?? [];
     for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]!);
@@ -259,11 +278,18 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
 
   for (const localId of walkOrder) {
     const l = local.nodes.get(localId)!;
-    const b = observed.get(localId);
+    let b = observed.get(localId);
     const syncable = l.kind === 'folder' || isSyncableUrl(l.url);
     const parentLocalId = l.parentId ?? rootLocal;
 
-    if (!b || (b.excluded && !b.globalId)) {
+    if (
+      !b ||
+      (b.excluded && !b.globalId) ||
+      (b.revision === 0 &&
+        b.globalId &&
+        !pendingOps.has(b.globalId) &&
+        !shadowNodes.has(b.globalId))
+    ) {
       if (!syncable) {
         out.stats.excluded++;
         if (!b)
@@ -299,7 +325,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
         out.stats.held++;
         continue;
       }
-      const globalId = inp.newId();
+      const globalId = b?.globalId ?? inp.newId();
       assigned.set(localId, globalId);
       out.stats.localNew++;
       const afterGlobalId = prevSyncedSibling(localId, parentLocalId, parentGlobal);
@@ -337,10 +363,36 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
       continue;
     }
     if (b.revision === 0) {
-      out.stats.held++;
-      continue;
+      const remote = shadowNodes.get(b.globalId);
+      if (remote && !remote.deletedAt) {
+        const parentGlobal = b.parentLocalId ? globalOf(b.parentLocalId) : inp.rootGlobalId;
+        if (remote.title !== b.title || remote.url !== b.url || remote.parentId !== parentGlobal) {
+          out.conflicts.push({
+            globalId: b.globalId,
+            localId,
+            kind: 'edit_edit',
+            nodeKind: l.kind,
+            base: baseOf(b, parentGlobal),
+            local: { title: l.title, url: l.url, parentGlobalId: globalOf(parentLocalId) },
+            remote: {
+              title: remote.title,
+              url: remote.url,
+              parentGlobalId: remote.parentId,
+              revision: remote.revision,
+              deleted: false,
+            },
+          });
+          continue;
+        }
+        b = { ...b, revision: remote.revision };
+        out.observedUpserts.push(b);
+      } else {
+        out.stats.held++;
+        continue;
+      }
     } // create 승인 대기 (op 가 failed 로 정리되면 엔진이 unmap)
 
+    if (!b.globalId) continue;
     const s = shadowNodes.get(b.globalId);
     const localParentGlobal = globalOf(parentLocalId);
     const titleChanged = l.title !== b.title;
@@ -536,7 +588,6 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
   else if (movedOut.length) out.stats.held += movedOut.length;
 
   const deleteDrafts: OpDraft[] = [];
-  let deleteCount = 0;
   const deleteItems: ReviewDraft['items'] = [];
   for (const b of removedTop) {
     const s = shadowNodes.get(b.globalId!);
@@ -564,14 +615,19 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
       continue;
     }
     const size = observedSubtree(b.localId).length;
-    deleteCount += size;
-    deleteItems.push({
-      globalId: b.globalId,
-      localId: b.localId,
-      title: b.title,
-      kind: b.kind,
-      url: b.url,
-    });
+    const descendants = new Set([b.globalId!]);
+    for (const id of descendants)
+      for (const child of shadowChildren.get(id) ?? []) descendants.add(child);
+    for (const id of descendants) {
+      const node = shadowNodes.get(id)!;
+      deleteItems.push({
+        globalId: id,
+        localId: g2l.get(id) ?? null,
+        title: node.title,
+        kind: node.kind,
+        url: node.url,
+      });
+    }
     deleteDrafts.push({
       kind: 'deleteSubtree',
       globalId: b.globalId!,
@@ -581,12 +637,10 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     });
   }
   const mappedCount = [...observed.values()].filter((o) => o.globalId && o.kind !== 'root').length;
-  const isMass =
-    deleteCount >= MASS_ABS || (deleteCount >= MASS_MIN && deleteCount >= mappedCount * MASS_RATIO);
   const allApproved = deleteDrafts.every(
     (d) => d.kind === 'deleteSubtree' && inp.approvedOutboundDeletes.has(d.globalId),
   );
-  if (deleteDrafts.length && isMass && !allApproved) {
+  if (deleteDrafts.length && !allApproved) {
     if (!inp.openReviewKinds.has('mass_delete_out'))
       out.reviews.push({ kind: 'mass_delete_out', items: deleteItems, scopeCount: mappedCount });
     out.stats.held += deleteDrafts.length;
@@ -613,16 +667,24 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     return d;
   };
   remoteNew.sort((a, b) => remoteDepth(a) - remoteDepth(b));
+  const remoteNewIds = new Set(remoteNew.map((n) => n.id));
+  const heldRemoteNew = new Set<string>();
   for (const s of remoteNew) {
     if (!s.parentId) continue;
     const parentLocalId = g2l.get(s.parentId);
     const parentConflict = openConflicts.has(s.parentId);
-    if (parentConflict) {
+    if (
+      parentConflict ||
+      heldRemoteNew.has(s.parentId) ||
+      (parentLocalId && !local.nodes.has(parentLocalId))
+    ) {
+      heldRemoteNew.add(s.id);
       out.stats.held++;
       continue;
     }
-    const parentIsRemoteNew = remoteNew.some((x) => x.id === s.parentId);
+    const parentIsRemoteNew = remoteNewIds.has(s.parentId);
     if (!parentLocalId && !parentIsRemoteNew) {
+      heldRemoteNew.add(s.id);
       out.stats.held++;
       continue;
     }
@@ -644,14 +706,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     LocalAction,
     { type: 'remove' }
   >[];
-  const removeTotal = removes.reduce((s, r) => s + r.count, 0);
-  const inMass =
-    removeTotal >= MASS_ABS || (removeTotal >= MASS_MIN && removeTotal >= mappedCount * MASS_RATIO);
-  if (
-    removes.length &&
-    inMass &&
-    !removes.every((r) => inp.approvedInboundDeletes.has(r.globalId))
-  ) {
+  if (removes.length && !removes.every((r) => inp.approvedInboundDeletes.has(r.globalId))) {
     out.localActions = out.localActions.filter((a) => a.type !== 'remove');
     out.stats.held += removes.length;
     if (!inp.openReviewKinds.has('mass_delete_in'))
@@ -694,13 +749,36 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
     // 아직 로컬에 만들어지지 않은 원격 자식이 있으면 이번 실행에서는 순서를 판단하지 않는다 (다음 실행에서 처리)
     if (remoteLive.some((g) => !g2l.has(g))) continue;
     const remoteG = remoteLive;
-    const sameSet = localG.length === remoteG.length && localG.every((g) => remoteG.includes(g));
+    const localSet = new Set(localG);
+    const remoteSet = new Set(remoteG);
+    const sameSet = localG.length === remoteG.length && localG.every((g) => remoteSet.has(g));
     if (!sameSet) continue;
     const baseG = (b.childOrder ?? [])
       .map((k) => globalOf(k))
-      .filter((g): g is string => !!g && localG.includes(g));
+      .filter((g): g is string => !!g && localSet.has(g));
     const remoteChanged = order.revision !== (b.orderRevision ?? -1);
     const localChanged = !sameSeq(localG, baseG) && baseG.length === localG.length;
+    if (localChanged && remoteChanged && !sameSeq(localG, remoteG)) {
+      const folder = local.nodes.get(fLocal)!;
+      const node = shadowNodes.get(fGlobal)!;
+      out.conflicts.push({
+        globalId: fGlobal,
+        localId: fLocal,
+        kind: 'order_order',
+        nodeKind: 'folder',
+        base: baseOf(b, node.parentId),
+        local: { title: folder.title, url: null, parentGlobalId: node.parentId },
+        remote: {
+          title: node.title,
+          url: null,
+          parentGlobalId: node.parentId,
+          revision: node.revision,
+          deleted: false,
+        },
+        orders: { base: baseG, local: localG, remote: remoteG, remoteRevision: order.revision },
+      });
+      continue;
+    }
     if (remoteChanged) {
       if (!sameSeq(localG, remoteG)) {
         out.localActions.push({
@@ -730,12 +808,19 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
 
   function hasUnsentChanges(localId: string): boolean {
     const kids = local.children.get(localId) ?? [];
+    const base = observed.get(localId)?.childOrder;
+    if (base && !sameSeq(kids, base)) return true;
     for (const k of kids) {
       const kb = observed.get(k);
       const kl = local.nodes.get(k)!;
       if (!kb || !kb.globalId || kb.revision === 0) {
         if (kl.kind === 'folder' || isSyncableUrl(kl.url)) return true;
-      } else if (kl.title !== kb.title || (kl.kind === 'bookmark' && kl.url !== kb.url))
+      } else if (
+        kl.title !== kb.title ||
+        (kl.kind === 'bookmark' && kl.url !== kb.url) ||
+        kl.parentId !== kb.parentLocalId ||
+        pendingOps.has(kb.globalId)
+      )
         return true;
       if (hasUnsentChanges(k)) return true;
     }
@@ -747,8 +832,7 @@ export function reconcile(inp: ReconcileInput): ReconcileOutput {
   }
   function observedSubtree(localId: string): string[] {
     const res = [localId];
-    for (const o of observed.values())
-      if (o.parentLocalId === localId) res.push(...observedSubtree(o.localId));
+    for (const id of observedChildren.get(localId) ?? []) res.push(...observedSubtree(id));
     return res;
   }
 }
@@ -758,4 +842,36 @@ function baseOf(b: ObservedNode, parentGlobalId: string | null) {
 }
 function sameSeq(a: string[], b: string[]) {
   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+export function deletionFingerprint(
+  items: ReviewItem['items'],
+  local: LocalTree,
+  nodes: Map<string, NodeRecord>,
+  orders: Map<string, FolderOrder>,
+): string {
+  const localIds = new Set<string>();
+  const remoteIds = new Set<string>();
+  const remoteChildren = new Map<string, string[]>();
+  for (const n of nodes.values())
+    if (n.parentId) {
+      const children = remoteChildren.get(n.parentId) ?? [];
+      children.push(n.id);
+      remoteChildren.set(n.parentId, children);
+    }
+  const collect = (id: string, ids: Set<string>, children: Map<string, string[]>) => {
+    if (ids.has(id)) return;
+    ids.add(id);
+    for (const child of children.get(id) ?? []) collect(child, ids, children);
+  };
+  for (const item of items) {
+    if (item.localId) collect(item.localId, localIds, local.children);
+    if (item.globalId) collect(item.globalId, remoteIds, remoteChildren);
+  }
+  return JSON.stringify([
+    [...localIds]
+      .sort()
+      .map((id) => [id, local.nodes.get(id) ?? null, local.children.get(id) ?? []]),
+    [...remoteIds].sort().map((id) => [id, nodes.get(id) ?? null, orders.get(id) ?? null]),
+  ]);
 }

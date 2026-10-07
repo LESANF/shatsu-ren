@@ -58,9 +58,20 @@ export type Request =
   | { type: 'resumeBinding'; collectionId: string }
   | { type: 'disconnectBinding'; collectionId: string; pendingChoice?: 'keep' | 'discard' }
   | { type: 'listConflicts' }
-  | { type: 'resolveConflict'; id: string; resolution: 'mine' | 'theirs' | 'both' }
+  | {
+      type: 'resolveConflict';
+      id: string;
+      resolution: 'mine' | 'theirs' | 'both';
+      fingerprint?: string;
+    }
   | { type: 'listReviews' }
-  | { type: 'resolveReview'; id: string; resolution: string; candidateLocalId?: string }
+  | {
+      type: 'resolveReview';
+      id: string;
+      resolution: string;
+      candidateLocalId?: string;
+      fingerprint?: string;
+    }
   | { type: 'listHistory'; beforeSeq?: number; limit?: number }
   | { type: 'listDevices' }
   | { type: 'revokeDevice'; deviceId: string }
@@ -99,7 +110,11 @@ export type Response<T extends Request['type']> = T extends 'getState'
               : T extends 'listHistory'
                 ? { items: RecentChange[]; hasMore: boolean }
                 : T extends 'getConflictDetail'
-                  ? ConflictRecord & { localUrl: string | null; remoteUrl: string | null }
+                  ? ConflictRecord & {
+                      localUrl: string | null;
+                      remoteUrl: string | null;
+                      orderTitles?: { local: string[]; remote: string[] };
+                    }
                   : unknown;
 
 export type Reply = { ok: true; data: unknown } | { ok: false; code: string; message?: string };
