@@ -6,6 +6,10 @@
 - Do not add features listed as out of scope in `docs/BLUEPRINT.md` §2.2 (payments, other login providers, E2EE, CRDT, AI tagging, new-tab page…) without a design discussion first.
 - The extension UI reads state only from the sync engine. Do not add UI-side sync logic or fake success states.
 
+## Workflow
+
+Branch → PR → merge commit, with `Co-Authored-By: Claude <noreply@anthropic.com>` on every commit. See `AGENTS.md`; hooks and branch protection enforce it.
+
 ## Verifying a change
 
 Minimum for any PR:

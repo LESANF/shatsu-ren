@@ -1,0 +1,10 @@
+#!/bin/sh
+# ponytail: main only moves through merged PRs (badge counting + review trail); branch protection enforces the same server-side
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      echo "pre-push: direct push to main is blocked. Open a PR: gh pr create --base main --head $(git rev-parse --abbrev-ref HEAD)" >&2
+      exit 1 ;;
+  esac
+done
+exit 0

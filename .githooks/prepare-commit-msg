@@ -1,0 +1,5 @@
+#!/bin/sh
+# ponytail: every commit carries a GitHub-linked co-author so merged PRs count toward Pair Extraordinaire
+f="$1"
+grep -qi '^Co-Authored-By:.*noreply@anthropic.com' "$f" && exit 0
+printf '\nCo-Authored-By: Claude <noreply@anthropic.com>\n' >> "$f"

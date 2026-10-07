@@ -8,6 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
     "setup": "pnpm install --frozen-lockfile",
     "dev": "pnpm --filter shatsu-ren-extension dev",
     "typecheck": "pnpm -r typecheck",
