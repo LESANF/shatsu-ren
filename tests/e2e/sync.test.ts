@@ -41,21 +41,6 @@ type State = {
   settings: { autoSync: boolean };
 };
 const state = (b: ExtBrowser) => b.send<State>({ type: 'getState' });
-const approveDeletion = async (b: ExtBrowser, kind: string) => {
-  const review = await waitFor(
-    async () =>
-      (
-        await b.send<{ id: string; kind: string; fingerprint: string }[]>({ type: 'listReviews' })
-      ).find((r) => r.kind === kind),
-    30000,
-  );
-  await b.send({
-    type: 'resolveReview',
-    id: review.id,
-    resolution: 'approve',
-    fingerprint: review.fingerprint,
-  });
-};
 const resolveConflict = async (b: ExtBrowser, id: string, resolution: string) => {
   const conflict = await b.send<{ fingerprint: string }>({ type: 'getConflictDetail', id });
   return b.send({ type: 'resolveConflict', id, resolution, fingerprint: conflict.fingerprint });
@@ -295,8 +280,6 @@ describe('C01/C02/E01 수정·이동·순서·삭제 전파', () => {
     const tA = await subtree(A, folderA.id);
     const sub1 = tA.children!.find((c) => c.title === 'Sub 1')!;
     await A.bookmarks('removeTree', sub1.id);
-    await approveDeletion(A, 'mass_delete_out');
-    await approveDeletion(B, 'mass_delete_in');
     await waitFor(
       async () => !(await subtree(B, folderB.id)).children!.some((c) => c.title === 'Sub 1'),
       30_000,
@@ -366,7 +349,6 @@ describe('C03/C04 충돌', () => {
     const [a] = await A.bookmarks<BmNode[]>('search', { url: 'https://example.com/ab/1' });
     const [b] = await B.bookmarks<BmNode[]>('search', { url: 'https://example.com/ab/1' });
     await B.bookmarks('remove', b!.id);
-    await approveDeletion(B, 'mass_delete_out');
     // B 의 삭제가 서버에 확정된 것을 휴지통으로 확인한 뒤 A 를 재개한다 (경합 방지)
     await waitFor(
       async () =>
@@ -409,56 +391,29 @@ describe('C03/C04 충돌', () => {
 });
 
 describe('E03/U11 대량 삭제 보호', () => {
-  it('A 에서 25개 삭제 → A 발신 검토(전송 없음) → 승인 → B 수신 검토(적용 없음) → 승인 → 적용', async () => {
+  it('A 에서 25개 삭제 → 확인 없이 B 에도 반영, 서버 휴지통에 남음', async () => {
     const countLat = async (b: ExtBrowser, root: string) =>
       (await subtree(b, root)).children!.filter(
         (c) => c.url?.includes('/ab/') || c.url?.includes('/ba/'),
       ).length;
     await untilSameShape(30_000);
     const beforeB = await countLat(B, folderB.id);
-    const tA = await subtree(A, folderA.id);
-    const victims = tA
+    const victims = (await subtree(A, folderA.id))
       .children!.filter((c) => c.url?.includes('/ab/') || c.url?.includes('/ba/'))
       .slice(0, 25);
     expect(victims.length).toBe(25);
     for (const v of victims) await A.bookmarks('remove', v.id);
-    const sA = await waitFor(
-      async () => {
-        const s = await state(A);
-        return s.counts.reviews > 0 ? s : null;
-      },
-      30_000,
-      250,
-      diag(A),
-    );
-    expect(sA.status).toBe('review_required');
-    const rA = await A.send<{ id: string; kind: string; items: unknown[] }[]>({
-      type: 'listReviews',
-    });
-    expect(rA[0]?.kind).toBe('mass_delete_out');
-    expect(rA[0]?.items.length).toBe(25);
-    await sleep(2000);
-    expect(await countLat(B, folderB.id)).toBe(beforeB); // 아직 B 에 전파 없음
-    await approveDeletion(A, 'mass_delete_out');
-    const sB = await waitFor(
-      async () => {
-        const s = await state(B);
-        return s.counts.reviews > 0 ? s : null;
-      },
+    await waitFor(
+      async () => (await countLat(B, folderB.id)) === beforeB - 25,
       30_000,
       250,
       diag(B),
     );
-    expect(sB.status).toBe('review_required');
-    const rB = await B.send<{ id: string; kind: string; items: unknown[] }[]>({
-      type: 'listReviews',
-    });
-    expect(rB[0]?.kind).toBe('mass_delete_in');
-    expect(rB[0]?.items.length).toBe(25);
-    expect(await countLat(B, folderB.id)).toBe(beforeB); // 승인 전 적용 없음
-    await approveDeletion(B, 'mass_delete_in');
+    expect((await state(A)).counts.reviews).toBe(0);
+    expect((await state(B)).counts.reviews).toBe(0);
+    const trash = await A.send<unknown[]>({ type: 'listTrash' });
+    expect(trash.length).toBeGreaterThanOrEqual(25);
     await untilSameShape(30_000);
-    expect(await countLat(B, folderB.id)).toBe(beforeB - 25);
   }, 180_000);
 });
 

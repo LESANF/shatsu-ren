@@ -532,36 +532,6 @@ describe('audit: sharing safety regressions', () => {
     await svc.engine.requestSync('manual', { force: true });
     expect(mocked.rpc.applyOne).not.toHaveBeenCalled();
   });
-  it('AUD-04 folder deletion preserves remote child edits until reviewed', () => {
-    const folder = randomUUID(),
-      child = randomUUID(),
-      newFolder = randomUUID(),
-      newChild = randomUUID();
-    const ob = new Map([
-      [rootLocal, observedNode(rootLocal, rootGlobal, null, 'root')],
-      ['f', observedNode('f', folder, rootLocal, 'folder')],
-      ['b', observedNode('b', child, 'f', 'bookmark')],
-    ]);
-    const shadow = new Map([
-      [rootGlobal, shadowNode(rootGlobal, null, 'root')],
-      [folder, shadowNode(folder, rootGlobal, 'folder', 'f')],
-      [
-        child,
-        { ...shadowNode(child, folder, 'bookmark', 'b'), title: 'new remote edit', revision: 2 },
-      ],
-    ]);
-    const out = reconcile(input(ob, shadow));
-    expect(out.conflicts).toHaveLength(0);
-    expect(out.ops.some((o) => o.kind === 'deleteSubtree' && o.globalId === folder)).toBe(false);
-    expect(out.reviews.some((r) => r.kind === 'mass_delete_out')).toBe(true);
-    shadow.set(newFolder, shadowNode(newFolder, folder, 'folder', 'new folder'));
-    shadow.set(newChild, shadowNode(newChild, newFolder, 'bookmark', 'new child'));
-    const expanded = reconcile(input(ob, shadow));
-    expect(expanded.localActions.filter((action) => action.type === 'create')).toHaveLength(0);
-    expect(
-      expanded.reviews.find((r) => r.kind === 'mass_delete_out')?.items.map((item) => item.title),
-    ).toContain('new child');
-  });
   it('AUD-05 account invalidation stops the next native action', async () => {
     mocked.api.create.mockImplementationOnce(
       async (p: { title: string; parentId: string; url?: string }) => {
